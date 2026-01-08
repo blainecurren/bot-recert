@@ -1,0 +1,68 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "Container",
+      "style": "emphasis",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "HCHB Patient Data Assistant",
+          "size": "Large",
+          "weight": "Bolder",
+          "color": "Accent"
+        }
+      ],
+      "bleed": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "Access patient data and AI-powered summaries from HCHB.",
+      "wrap": true,
+      "spacing": "Medium"
+    },
+    {
+      "type": "Container",
+      "spacing": "Large",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Worker ID",
+          "weight": "Bolder",
+          "spacing": "Small"
+        },
+        {
+          "type": "Input.Text",
+          "id": "workerId",
+          "placeholder": "Enter your HCHB Worker ID...",
+          "style": "text"
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "spacing": "Small",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Your Worker ID can be found in HCHB under My Profile",
+          "size": "Small",
+          "isSubtle": true,
+          "wrap": true
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Submit",
+      "title": "Continue",
+      "style": "positive",
+      "data": {
+        "action": "validateWorker"
+      }
+    }
+  ]
+}

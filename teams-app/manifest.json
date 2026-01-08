@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "65e9f333-35a2-4a10-a2da-e94bf5dbde28",
+  "packageName": "com.yourcompany.recertbot",
+  "developer": {
+    "name": "Your Company",
+    "websiteUrl": "https://yourcompany.com",
+    "privacyUrl": "https://yourcompany.com/privacy",
+    "termsOfUseUrl": "https://yourcompany.com/terms"
+  },
+  "name": {
+    "short": "Recert Bot",
+    "full": "Recertification Episode Summary Bot"
+  },
+  "description": {
+    "short": "Get patient episode summaries for recert visits",
+    "full": "AI-powered clinical summary tool that helps nurses quickly review 60-day episode documentation for recertification visits."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#1F4E79",
+  "bots": [
+    {
+      "botId": "65e9f333-35a2-4a10-a2da-e94bf5dbde28",
+      "scopes": ["personal", "team", "groupchat"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": [
+    "magdalene-docile-geraldine.ngrok-free.dev"
+  ]
+}

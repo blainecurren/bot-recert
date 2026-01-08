@@ -1,0 +1,137 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "Container",
+      "style": "emphasis",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "{{patientName}}",
+          "size": "Large",
+          "weight": "Bolder",
+          "color": "Accent"
+        },
+        {
+          "type": "TextBlock",
+          "text": "Episode: {{episodeStart}} - {{episodeEnd}}",
+          "size": "Small",
+          "isSubtle": true,
+          "spacing": "None"
+        }
+      ],
+      "bleed": true
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        { "title": "DOB", "value": "{{dob}}" },
+        { "title": "Primary Dx", "value": "{{primaryDiagnosis}}" },
+        { "title": "Medications", "value": "{{medicationCount}}" },
+        { "title": "Last Visit", "value": "{{lastVisitDate}}" },
+        { "title": "Days in Episode", "value": "{{daysInEpisode}}" }
+      ],
+      "spacing": "Medium"
+    },
+    {
+      "type": "Container",
+      "id": "alertsSection",
+      "style": "attention",
+      "spacing": "Medium",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Clinical Alerts",
+          "weight": "Bolder",
+          "color": "Attention"
+        },
+        {
+          "type": "Container",
+          "id": "alertsList",
+          "items": []
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "spacing": "Medium",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Recert Priorities",
+          "weight": "Bolder",
+          "spacing": "Small"
+        },
+        {
+          "type": "Container",
+          "id": "prioritiesList",
+          "items": []
+        }
+      ]
+    },
+    {
+      "type": "ActionSet",
+      "spacing": "Medium",
+      "actions": [
+        {
+          "type": "Action.ShowCard",
+          "title": "View Timeline",
+          "card": {
+            "type": "AdaptiveCard",
+            "body": [
+              {
+                "type": "Container",
+                "id": "timelineContent",
+                "items": []
+              }
+            ]
+          }
+        },
+        {
+          "type": "Action.ShowCard",
+          "title": "View Goals",
+          "card": {
+            "type": "AdaptiveCard",
+            "body": [
+              {
+                "type": "Container",
+                "id": "goalsContent",
+                "items": []
+              }
+            ]
+          }
+        },
+        {
+          "type": "Action.ShowCard",
+          "title": "View Medications",
+          "card": {
+            "type": "AdaptiveCard",
+            "body": [
+              {
+                "type": "Container",
+                "id": "medicationsContent",
+                "items": []
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Submit",
+      "title": "New Search",
+      "data": {
+        "action": "newSearch"
+      }
+    },
+    {
+      "type": "Action.OpenUrl",
+      "title": "Open in HCHB",
+      "url": "https://hchb.com/patient/{{patientId}}"
+    }
+  ]
+}

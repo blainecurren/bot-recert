@@ -1,0 +1,42 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "Container",
+      "style": "emphasis",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Search Results",
+          "size": "Large",
+          "weight": "Bolder",
+          "color": "Accent"
+        }
+      ],
+      "bleed": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "Searching for: \"{{searchTerm}}\"",
+      "isSubtle": true,
+      "spacing": "Small"
+    },
+    {
+      "type": "Container",
+      "id": "patientResults",
+      "spacing": "Medium",
+      "items": []
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Submit",
+      "title": "New Search",
+      "data": {
+        "action": "newSearch"
+      }
+    }
+  ]
+}
