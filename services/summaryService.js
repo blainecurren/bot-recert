@@ -1,7 +1,7 @@
 /**
  * Summary Service
  * Generates episode summaries for recertification visits.
- * Currently uses mock data - will be replaced with Azure OpenAI integration.
+ * TODO: Integrate with Azure OpenAI for AI-powered summaries.
  */
 
 // TODO: Replace with Azure OpenAI call

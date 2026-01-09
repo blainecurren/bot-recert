@@ -101,7 +101,6 @@ function buildDateSelectionCard(worker) {
  */
 function buildPatientSelectionCard(worker, patients, selectedDate) {
     const formattedDate = formatDisplayDate(selectedDate);
-    const hasMockData = patients.some(p => p.isMockData);
 
     const card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -141,22 +140,6 @@ function buildPatientSelectionCard(worker, patients, selectedDate) {
         "actions": []
     };
 
-    // Add mock data notice if applicable
-    if (hasMockData) {
-        card.body.push({
-            "type": "Container",
-            "style": "warning",
-            "spacing": "Small",
-            "items": [
-                {
-                    "type": "TextBlock",
-                    "text": "Note: Showing sample data for testing. No appointments were found in HCHB for this date.",
-                    "wrap": true,
-                    "size": "Small"
-                }
-            ]
-        });
-    }
 
     if (patients.length === 0) {
         card.actions = [

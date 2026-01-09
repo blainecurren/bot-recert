@@ -1,9 +1,35 @@
 /**
  * FHIR Service for HCHB
  * High-level functions for querying patient data, episodes, and documents
+ *
+ * Can use either:
+ * - Python backend (preferred) - set USE_PYTHON_BACKEND=true
+ * - Direct FHIR calls (fallback)
  */
 
 const { fhirGet } = require('./fhirClient');
+const pythonBackend = require('./pythonBackendClient');
+
+// Use Python backend by default, can be disabled via env var
+const USE_PYTHON_BACKEND = process.env.USE_PYTHON_BACKEND !== 'false';
+
+/**
+ * Helper function to try Python backend first
+ * @param {string} resourceId - The resource ID for pythonBackendClient
+ * @param {string} patientId - Patient ID (optional)
+ * @param {string} workerId - Worker ID (optional)
+ * @returns {Array|Object|null} Data from Python backend or null if unavailable
+ */
+async function tryPythonBackend(resourceId, patientId = null, workerId = null) {
+    if (!USE_PYTHON_BACKEND) return null;
+    try {
+        const result = await pythonBackend.fetchResource(resourceId, patientId, workerId);
+        return result?.data || null;
+    } catch (error) {
+        console.log(`[FHIR] Python backend failed for ${resourceId}, using fallback:`, error.message);
+        return null;
+    }
+}
 
 /**
  * Search for patients by name
@@ -34,6 +60,11 @@ async function searchPatients(searchTerm) {
  * Get a single patient by FHIR ID
  */
 async function getPatientById(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Patient', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const patient = await fhirGet(`/Patient/${patientId}`);
         return transformPatient(patient);
@@ -47,6 +78,21 @@ async function getPatientById(patientId) {
  * Get worker/practitioner by ID
  */
 async function getWorkerById(workerId) {
+    // Try Python backend first
+    if (USE_PYTHON_BACKEND) {
+        try {
+            console.log('[PythonBackend] Validating worker:', workerId);
+            const result = await pythonBackend.validateWorker(workerId);
+            if (result.valid && result.worker) {
+                return result.worker;
+            }
+            console.log('[PythonBackend] Worker not found, trying direct FHIR');
+        } catch (error) {
+            console.log('[PythonBackend] Unavailable, falling back to direct FHIR:', error.message);
+        }
+    }
+
+    // Fallback to direct FHIR
     try {
         console.log('[FHIR] Looking up worker:', workerId);
 
@@ -58,7 +104,7 @@ async function getWorkerById(workerId) {
         if (bundle.entry && bundle.entry.length > 0) {
             const practitioner = bundle.entry[0].resource;
             const name = practitioner.name?.[0] || {};
-            
+
             return {
                 id: practitioner.id,
                 identifier: workerId,
@@ -67,23 +113,12 @@ async function getWorkerById(workerId) {
             };
         }
 
-        // Fallback: return mock worker for testing
-        console.log('[FHIR] Worker not found, using fallback');
-        return {
-            id: workerId,
-            identifier: workerId,
-            name: `Worker ${workerId}`,
-            active: true
-        };
+        console.log('[FHIR] Worker not found');
+        return null;
 
     } catch (error) {
         console.error('[FHIR] Get worker failed:', error.message);
-        return {
-            id: workerId,
-            identifier: workerId,
-            name: `Worker ${workerId}`,
-            active: true
-        };
+        return null;
     }
 }
 
@@ -170,6 +205,11 @@ async function getRecertPatients(workerId = null, daysAhead = 30) {
  * Get active episodes for a patient
  */
 async function getPatientEpisodes(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('EpisodeOfCare', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/EpisodeOfCare', {
             patient: `Patient/${patientId}`,
@@ -197,6 +237,11 @@ async function getPatientEpisodes(patientId) {
  * Get conditions (diagnoses) for a patient
  */
 async function getConditions(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Condition-Diagnoses', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Condition', {
             subject: `Patient/${patientId}`,
@@ -225,6 +270,11 @@ async function getConditions(patientId) {
  * Get medications for a patient
  */
 async function getMedications(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('MedicationRequest', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/MedicationRequest', {
             subject: `Patient/${patientId}`,
@@ -238,7 +288,7 @@ async function getMedications(patientId) {
             const dosage = med.dosageInstruction?.[0];
             return {
                 id: med.id,
-                name: med.medicationCodeableConcept?.text || 
+                name: med.medicationCodeableConcept?.text ||
                       med.medicationCodeableConcept?.coding?.[0]?.display || 'Unknown',
                 dosage: dosage?.text || '',
                 frequency: dosage?.timing?.code?.text || ''
@@ -254,6 +304,11 @@ async function getMedications(patientId) {
  * Get encounters (visits) for a patient
  */
 async function getEncounters(patientId, limit = 10) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Encounter', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Encounter', {
             subject: `Patient/${patientId}`,
@@ -340,6 +395,11 @@ async function getDocuments(patientId) {
  * Get allergy intolerances for a patient
  */
 async function getAllergyIntolerances(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('AllergyIntolerance', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/AllergyIntolerance', {
             patient: `Patient/${patientId}`
@@ -396,10 +456,20 @@ async function getObservationsByCode(patientId, loincCode, limit = 10) {
 }
 
 async function getBodyTemperature(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-Temperature', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '8310-5'); // Body temperature
 }
 
 async function getBloodPressure(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-BloodPressure', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Observation', {
             subject: `Patient/${patientId}`,
@@ -430,34 +500,74 @@ async function getBloodPressure(patientId) {
 }
 
 async function getBodyMass(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-BodyMass', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '39156-5'); // BMI
 }
 
 async function getBodyWeight(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-BodyWeight', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '29463-7'); // Body weight
 }
 
 async function getHeadCircumference(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-HeadCircumference', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '9843-4'); // Head circumference
 }
 
 async function getHeartRate(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-HeartRate', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '8867-4'); // Heart rate
 }
 
 async function getOxygenSaturation(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-OxygenSaturation', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '2708-6'); // Oxygen saturation
 }
 
 async function getRespiratoryRate(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-RespiratoryRate', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '9279-1'); // Respiratory rate
 }
 
 async function getLivingArrangement(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-LivingArrangement', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getObservationsByCode(patientId, '63512-8'); // Living arrangement
 }
 
 async function getWoundAssessment(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Observation-WoundAssessment', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Observation', {
             subject: `Patient/${patientId}`,
@@ -492,10 +602,20 @@ async function getWoundAssessmentDetails(patientId) {
 // ============ Care Plan Functions ============
 
 async function getAideHomecarePlan(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('CarePlan-AideHomecare', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getCarePlanByCategory(patientId, 'aide-homecare');
 }
 
 async function getPersonalCarePlan(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('CarePlan-PersonalCare', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getCarePlanByCategory(patientId, 'personal-care');
 }
 
@@ -526,6 +646,11 @@ async function getCarePlanByCategory(patientId, category) {
 }
 
 async function getCareTeam(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('CareTeam', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/CareTeam', {
             subject: `Patient/${patientId}`,
@@ -584,36 +709,76 @@ async function getDocumentsByType(patientId, typeCode) {
 }
 
 async function getCoordinationNotes(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-CoordinationNote', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocumentsByType(patientId, 'coordination-note');
 }
 
 async function getEpisodeDocuments(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-EpisodeDocument', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocumentsByType(patientId, 'episode-document');
 }
 
 async function getIDGMeetingNotes(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-IDGMeetingNote', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocumentsByType(patientId, 'idg-meeting-note');
 }
 
 async function getPatientDocuments(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-PatientDocument', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocuments(patientId); // Generic documents
 }
 
 async function getPatientSignatures(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-PatientSignature', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocumentsByType(patientId, 'patient-signature');
 }
 
 async function getTherapyGoalsStatus(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-TherapyGoalsStatus', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocumentsByType(patientId, 'therapy-goals-status');
 }
 
 async function getVisitDocuments(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('DocumentReference-VisitDocument', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getDocumentsByType(patientId, 'visit-document');
 }
 
 // ============ Condition Functions ============
 
 async function getWounds(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Condition-Wound', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Condition', {
             subject: `Patient/${patientId}`,
@@ -641,6 +806,11 @@ async function getWounds(patientId) {
 // ============ Appointment Functions ============
 
 async function getPatientVisits(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Appointment-Visit', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Appointment', {
             patient: `Patient/${patientId}`,
@@ -667,10 +837,20 @@ async function getPatientVisits(patientId) {
 }
 
 async function getSchedule(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Appointment-Schedule', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     return getPatientVisits(patientId);
 }
 
 async function getIDGMeetings(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Appointment-IDG', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Appointment', {
             patient: `Patient/${patientId}`,
@@ -699,6 +879,11 @@ async function getIDGMeetings(patientId) {
 // ============ Related Person Functions ============
 
 async function getRelatedPersons(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('RelatedPerson', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/RelatedPerson', {
             patient: `Patient/${patientId}`
@@ -725,6 +910,11 @@ async function getRelatedPersons(patientId) {
 // ============ Organization Functions ============
 
 async function getAgency() {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Organization-Agency', null);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Organization', {
             type: 'prov', // Provider organization
@@ -746,6 +936,11 @@ async function getAgency() {
 }
 
 async function getBranch() {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Organization-Branch', null);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Organization', {
             type: 'bus', // Business organization
@@ -773,6 +968,11 @@ async function getTeam(patientId) {
 }
 
 async function getPayorSource(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Coverage', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Coverage', {
             beneficiary: `Patient/${patientId}`
@@ -798,6 +998,11 @@ async function getPayorSource(patientId) {
 // ============ Practitioner Functions ============
 
 async function getPhysician(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Practitioner-Physician', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         // Get the patient's general practitioner
         const patient = await fhirGet(`/Patient/${patientId}`);
@@ -825,6 +1030,11 @@ async function getWorker(workerId) {
 // ============ Location Functions ============
 
 async function getServiceLocation(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Location-ServiceLocation', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Location', {
             'organization.type': 'prov',
@@ -849,6 +1059,11 @@ async function getServiceLocation(patientId) {
 }
 
 async function getWorkerLocation(workerId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Location-WorkerLocation', null, workerId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/PractitionerRole', {
             practitioner: workerId,
@@ -875,6 +1090,11 @@ async function getWorkerLocation(workerId) {
 // ============ Referral & Billing Functions ============
 
 async function getReferralOrders(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('ServiceRequest-ReferralOrder', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/ServiceRequest', {
             subject: `Patient/${patientId}`,
@@ -902,6 +1122,11 @@ async function getReferralOrders(patientId) {
 }
 
 async function getAccount(patientId) {
+    // Try Python backend first
+    const pythonData = await tryPythonBackend('Account', patientId);
+    if (pythonData) return pythonData;
+
+    // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Account', {
             subject: `Patient/${patientId}`
@@ -1034,5 +1259,12 @@ module.exports = {
 
     // Referrals & Billing
     getReferralOrders,
-    getAccount
+    getAccount,
+
+    // Python Backend utilities
+    fetchResourceViaPython: pythonBackend.fetchResource,
+    getWorkerPatientsViaPython: pythonBackend.getWorkerPatients,
+    batchFetchViaPython: pythonBackend.batchFetch,
+    pythonBackendHealthCheck: pythonBackend.healthCheck,
+    USE_PYTHON_BACKEND
 };
