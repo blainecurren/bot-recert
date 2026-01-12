@@ -15,6 +15,7 @@ const express = require('express');
 const patientService = require('./services/patientService');
 const summaryService = require('./services/summaryService');
 const dataFetchService = require('./services/dataFetchService');
+const documentService = require('./services/documentService');
 const cardBuilder = require('./cards/cardBuilder');
 
 // Create server
@@ -125,6 +126,10 @@ class RecertBot extends ActivityHandler {
 
             case 'backToResourceSelection':
                 await this.handleBackToResourceSelection(context);
+                break;
+
+            case 'viewDocuments':
+                await this.handleViewDocuments(context, value.patientId, value.patientName);
                 break;
 
             case 'newSearch':
@@ -571,6 +576,61 @@ class RecertBot extends ActivityHandler {
         }
 
         return `${resourceLabel}: ${count} record(s) found. AI summarization pending configuration.`;
+    }
+
+    /**
+     * Handle viewing documents for a patient
+     */
+    async handleViewDocuments(context, patientId, patientName) {
+        if (!patientId) {
+            await context.sendActivity('Invalid patient selection.');
+            await this.sendWelcomeCard(context);
+            return;
+        }
+
+        console.log(`Viewing documents for patient: ${patientId}`);
+
+        try {
+            const conversationId = context.activity.conversation.id;
+            const workerCtx = this.workerContext.get(conversationId);
+
+            // Send processing message
+            await context.sendActivity('Fetching patient documents...');
+
+            // Fetch documents from FHIR
+            const documents = await documentService.getPatientDocuments(patientId, { limit: 100 });
+            console.log(`Found ${documents.length} documents for patient ${patientId}`);
+
+            // Get patient info from context or create minimal object
+            let patient = workerCtx?.selectedPatient;
+            if (!patient || patient.id !== patientId) {
+                patient = workerCtx?.patients?.find(p => p.id === patientId);
+            }
+            if (!patient) {
+                patient = {
+                    id: patientId,
+                    fullName: patientName || patientId
+                };
+            }
+
+            // Build and send the document list card
+            const docCard = cardBuilder.buildDocumentListCard(
+                patient,
+                documents,
+                workerCtx?.worker
+            );
+            const card = CardFactory.adaptiveCard(docCard);
+            await context.sendActivity({ attachments: [card] });
+
+        } catch (error) {
+            console.error('Error fetching documents:', error);
+            const errorCard = cardBuilder.buildErrorCard(
+                'Error Fetching Documents',
+                `There was an error fetching documents: ${error.message || 'Unknown error'}. Please try again.`
+            );
+            const card = CardFactory.adaptiveCard(errorCard);
+            await context.sendActivity({ attachments: [card] });
+        }
     }
 
     /**

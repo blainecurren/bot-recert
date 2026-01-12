@@ -622,6 +622,15 @@ function buildResourceSelectionCard(patient, worker) {
         },
         {
             "type": "Action.Submit",
+            "title": "View All Documents",
+            "data": {
+                "action": "viewDocuments",
+                "patientId": patient.id,
+                "patientName": patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`
+            }
+        },
+        {
+            "type": "Action.Submit",
             "title": "Back to Patients",
             "data": { "action": "backToPatients" }
         }
@@ -1554,6 +1563,213 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
 }
 
 /**
+ * Build the document list card for a patient
+ * @param {Object} patient - Patient object
+ * @param {Array} documents - Array of document objects from documentService
+ * @param {Object} worker - Worker info object
+ * @returns {Object} Document list card JSON
+ */
+function buildDocumentListCard(patient, documents, worker) {
+    const patientName = patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`;
+
+    const card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.5",
+        "body": [
+            {
+                "type": "Container",
+                "style": "emphasis",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "Patient Documents",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "Accent"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": `Patient: ${patientName}`,
+                        "size": "Small",
+                        "isSubtle": true,
+                        "spacing": "None"
+                    }
+                ],
+                "bleed": true
+            }
+        ],
+        "actions": []
+    };
+
+    if (!documents || documents.length === 0) {
+        card.body.push({
+            "type": "Container",
+            "style": "warning",
+            "spacing": "Medium",
+            "items": [
+                {
+                    "type": "TextBlock",
+                    "text": "No documents found for this patient.",
+                    "wrap": true
+                }
+            ]
+        });
+    } else {
+        // Add summary
+        card.body.push({
+            "type": "TextBlock",
+            "text": `Found ${documents.length} document(s)`,
+            "wrap": true,
+            "spacing": "Medium",
+            "isSubtle": true
+        });
+
+        // Group documents by type
+        const grouped = {};
+        documents.forEach(doc => {
+            const type = doc.type || 'Other';
+            if (!grouped[type]) grouped[type] = [];
+            grouped[type].push(doc);
+        });
+
+        // Add each document type as an expandable section
+        const expandableActions = [];
+
+        Object.keys(grouped).sort().forEach(type => {
+            const typeDocs = grouped[type];
+
+            const docItems = typeDocs.map(doc => {
+                const items = [
+                    {
+                        "type": "ColumnSet",
+                        "columns": [
+                            {
+                                "type": "Column",
+                                "width": "stretch",
+                                "items": [
+                                    {
+                                        "type": "TextBlock",
+                                        "text": doc.description || doc.type,
+                                        "weight": "Bolder",
+                                        "wrap": true
+                                    },
+                                    {
+                                        "type": "TextBlock",
+                                        "text": `Date: ${doc.date}`,
+                                        "size": "Small",
+                                        "isSubtle": true,
+                                        "spacing": "None"
+                                    }
+                                ]
+                            },
+                            {
+                                "type": "Column",
+                                "width": "auto",
+                                "verticalContentAlignment": "Center",
+                                "items": doc.hasAttachment ? [
+                                    {
+                                        "type": "TextBlock",
+                                        "text": "PDF",
+                                        "color": "Good",
+                                        "size": "Small",
+                                        "weight": "Bolder"
+                                    }
+                                ] : [
+                                    {
+                                        "type": "TextBlock",
+                                        "text": "No file",
+                                        "size": "Small",
+                                        "isSubtle": true
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ];
+
+                // Add filename if available
+                if (doc.filename) {
+                    items.push({
+                        "type": "TextBlock",
+                        "text": `File: ${doc.filename}`,
+                        "size": "Small",
+                        "isSubtle": true,
+                        "spacing": "None"
+                    });
+                }
+
+                return {
+                    "type": "Container",
+                    "spacing": "Small",
+                    "separator": true,
+                    "items": items
+                };
+            });
+
+            expandableActions.push({
+                "type": "Action.ShowCard",
+                "title": `${type} (${typeDocs.length})`,
+                "card": {
+                    "type": "AdaptiveCard",
+                    "body": docItems
+                }
+            });
+        });
+
+        // Add expandable sections (max 6 per ActionSet due to Teams limits)
+        for (let i = 0; i < expandableActions.length; i += 6) {
+            const chunk = expandableActions.slice(i, i + 6);
+            card.body.push({
+                "type": "ActionSet",
+                "spacing": "Medium",
+                "actions": chunk
+            });
+        }
+
+        // Add downloadable documents section if there are PDFs
+        const downloadable = documents.filter(d => d.hasAttachment && d.contentType === 'application/pdf');
+        if (downloadable.length > 0) {
+            card.body.push({
+                "type": "Container",
+                "spacing": "Medium",
+                "separator": true,
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": `${downloadable.length} downloadable PDF(s) available`,
+                        "size": "Small",
+                        "color": "Good",
+                        "weight": "Bolder"
+                    }
+                ]
+            });
+        }
+    }
+
+    // Navigation actions
+    card.actions = [
+        {
+            "type": "Action.Submit",
+            "title": "Back to Data Selection",
+            "data": { "action": "backToResourceSelection" }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "Back to Patients",
+            "data": { "action": "backToPatients" }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "New Search",
+            "data": { "action": "newSearch" }
+        }
+    ];
+
+    return card;
+}
+
+/**
  * Format date for display
  * @param {string} dateStr - Date string in YYYY-MM-DD format
  * @returns {string} Formatted date
@@ -1584,6 +1800,7 @@ module.exports = {
     buildPatientSelectionCard,
     buildResourceSelectionCard,
     buildDataResultsCard,
+    buildDocumentListCard,
     buildRecertPatientListCard,
     buildProcessingCard,
     buildPatientListCard,
