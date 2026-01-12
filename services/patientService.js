@@ -37,10 +37,48 @@ async function getWorkerById(workerId) {
     try {
         console.log('[PatientService] Looking up worker:', workerId);
 
-        const bundle = await fhirGet('/Practitioner', {
+        // Try 1: Search by identifier
+        let bundle = await fhirGet('/Practitioner', {
             identifier: workerId,
             _count: 1
         });
+
+        // Try 2: Search by _id (resource ID)
+        if (!bundle.entry || bundle.entry.length === 0) {
+            console.log('[PatientService] Not found by identifier, trying _id...');
+            bundle = await fhirGet('/Practitioner', {
+                _id: workerId,
+                _count: 1
+            });
+        }
+
+        // Try 3: Direct fetch by resource ID
+        if (!bundle.entry || bundle.entry.length === 0) {
+            console.log('[PatientService] Not found by _id, trying direct fetch...');
+            try {
+                const practitioner = await fhirGet(`/Practitioner/${workerId}`);
+                if (practitioner && practitioner.id) {
+                    const name = practitioner.name?.[0] || {};
+                    return {
+                        id: practitioner.id,
+                        identifier: workerId,
+                        name: name.text || `${name.given?.[0] || ''} ${name.family || ''}`.trim() || workerId,
+                        active: practitioner.active
+                    };
+                }
+            } catch (e) {
+                // Not found by direct fetch, continue
+            }
+        }
+
+        // Try 4: Search by name (if workerId looks like a name)
+        if (!bundle.entry || bundle.entry.length === 0) {
+            console.log('[PatientService] Not found by ID, trying name search...');
+            bundle = await fhirGet('/Practitioner', {
+                name: workerId,
+                _count: 1
+            });
+        }
 
         if (bundle.entry && bundle.entry.length > 0) {
             const practitioner = bundle.entry[0].resource;
@@ -171,30 +209,17 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
     try {
         console.log(`[PatientService] Getting patients for worker ${workerId} on ${dateStr}`);
 
-        // Try different practitioner reference formats
+        // Use 'actor' parameter which works with HCHB API
+        console.log(`[PatientService] Querying appointments with actor=Practitioner/${workerId}, date=${dateStr}`);
         let bundle = null;
-        const practitionerFormats = [
-            workerId,
-            `Practitioner/${workerId}`,
-            workerId.toString()
-        ];
-
-        for (const practRef of practitionerFormats) {
-            console.log(`[PatientService] Trying practitioner format: ${practRef}`);
-            try {
-                bundle = await fhirGet('/Appointment', {
-                    practitioner: practRef,
-                    date: dateStr,
-                    _count: 100,
-                    _include: 'Appointment:patient'
-                });
-                if (bundle.entry && bundle.entry.length > 0) {
-                    console.log(`[PatientService] Found appointments with format: ${practRef}`);
-                    break;
-                }
-            } catch (e) {
-                console.log(`[PatientService] Format ${practRef} failed: ${e.message}`);
-            }
+        try {
+            bundle = await fhirGet('/Appointment', {
+                actor: `Practitioner/${workerId}`,
+                date: dateStr,
+                _count: 100
+            });
+        } catch (e) {
+            console.log(`[PatientService] Appointment query failed: ${e.message}`);
         }
 
         if (!bundle || !bundle.entry || bundle.entry.length === 0) {
@@ -202,43 +227,51 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             return [];
         }
 
-        // Separate appointments and patients
-        const appointments = bundle.entry.filter(e => e.resource.resourceType === 'Appointment');
-        const patients = bundle.entry.filter(e => e.resource.resourceType === 'Patient');
-
-        // Create patient lookup
-        const patientMap = new Map();
-        patients.forEach(p => patientMap.set(`Patient/${p.resource.id}`, p.resource));
+        console.log(`[PatientService] Found ${bundle.entry.length} appointments`);
 
         const scheduledPatients = [];
         const seenPatientIds = new Set();
 
-        for (const entry of appointments) {
+        for (const entry of bundle.entry) {
             const appointment = entry.resource;
 
-            // Find patient participant
-            const patientParticipant = appointment.participant?.find(p =>
-                p.actor?.reference?.startsWith('Patient/')
+            // HCHB stores patient in extension, not participant
+            // Look for extension with url "https://api.hchb.com/fhir/r4/StructureDefinition/subject"
+            let patientRef = null;
+
+            // First try extension
+            const subjectExt = appointment.extension?.find(ext =>
+                ext.url === 'https://api.hchb.com/fhir/r4/StructureDefinition/subject'
             );
+            if (subjectExt && subjectExt.valueReference?.reference) {
+                patientRef = subjectExt.valueReference.reference;
+            }
 
-            if (!patientParticipant) continue;
+            // Fallback to participant if no extension
+            if (!patientRef) {
+                const patientParticipant = appointment.participant?.find(p =>
+                    p.actor?.reference?.startsWith('Patient/')
+                );
+                if (patientParticipant) {
+                    patientRef = patientParticipant.actor.reference;
+                }
+            }
 
-            const patientRef = patientParticipant.actor.reference;
+            if (!patientRef) continue;
+
             const patientId = patientRef.replace('Patient/', '');
 
             // Skip if we've already added this patient
             if (seenPatientIds.has(patientId)) continue;
             seenPatientIds.add(patientId);
 
-            let patient = patientMap.get(patientRef);
-
-            // Fetch patient if not included
-            if (!patient) {
-                try {
-                    patient = await fhirGet(`/Patient/${patientId}`);
-                } catch (e) {
-                    continue;
-                }
+            // Fetch patient details
+            let patient = null;
+            try {
+                patient = await fhirGet(`/Patient/${patientId}`);
+            } catch (e) {
+                console.log(`[PatientService] Failed to fetch patient ${patientId}: ${e.message}`);
+                continue;
             }
 
             if (patient) {

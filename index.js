@@ -1,6 +1,14 @@
 require('dotenv').config();
 
-const { ActivityHandler, CloudAdapter, ConfigurationBotFrameworkAuthentication, CardFactory } = require('botbuilder');
+// Catch unhandled errors
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+const { ActivityHandler, BotFrameworkAdapter, CardFactory } = require('botbuilder');
 const express = require('express');
 
 // Import services and card builder
@@ -13,15 +21,17 @@ const cardBuilder = require('./cards/cardBuilder');
 const app = express();
 app.use(express.json());
 
-// Create adapter with proper SingleTenant authentication
-const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication({
-    MicrosoftAppId: process.env.MicrosoftAppId,
-    MicrosoftAppPassword: process.env.MicrosoftAppPassword,
-    MicrosoftAppType: process.env.MicrosoftAppType,
-    MicrosoftAppTenantId: process.env.MicrosoftAppTenantId
+// Create adapter - skip auth for local testing if LOCAL_DEBUG is set
+const LOCAL_DEBUG = process.env.LOCAL_DEBUG === 'true';
+
+const adapter = new BotFrameworkAdapter({
+    appId: LOCAL_DEBUG ? '' : process.env.MicrosoftAppId,
+    appPassword: LOCAL_DEBUG ? '' : process.env.MicrosoftAppPassword
 });
 
-const adapter = new CloudAdapter(botFrameworkAuth);
+if (LOCAL_DEBUG) {
+    console.log('*** LOCAL DEBUG MODE - Authentication disabled ***');
+}
 
 // Error handler
 adapter.onTurnError = async (context, error) => {
@@ -619,7 +629,15 @@ app.get('/', (req, res) => {
 // Listen for incoming requests
 app.post('/api/messages', async (req, res) => {
     console.log('Received request at /api/messages');
-    await adapter.process(req, res, (context) => bot.run(context));
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    try {
+        await adapter.processActivity(req, res, async (context) => {
+            await bot.run(context);
+        });
+    } catch (error) {
+        console.error('Error processing activity:', error);
+        res.status(500).send({ error: error.message });
+    }
 });
 
 // Start server
@@ -631,6 +649,13 @@ const server = app.listen(port, '0.0.0.0', () => {
     console.log(`App Type: ${process.env.MicrosoftAppType}`);
     console.log(`\nPress Ctrl+C to stop.\n`);
 });
+
+server.on('error', (err) => {
+    console.error('Server error:', err);
+});
+
+// Keep the process alive
+setInterval(() => {}, 1000);
 
 // Keep process alive
 process.on('SIGINT', () => {
