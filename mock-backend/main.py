@@ -3,10 +3,20 @@ Mock Python Backend for HCHB FHIR API Testing
 FastAPI server that simulates the Python backend at localhost:8000
 """
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from datetime import datetime, timedelta
+from typing import Optional
 import random
+import httpx
+import pdfplumber
+import io
+
+
+class ExtractTextRequest(BaseModel):
+    url: str
+    token: str
 
 app = FastAPI(title="Mock HCHB Backend", version="1.0.0")
 
@@ -250,6 +260,87 @@ async def get_documents(patient_id: str, doc_type: str):
         ],
         "count": 1
     }
+
+
+@app.post("/api/v1/documents/extract-text")
+async def extract_text_from_pdf(request: ExtractTextRequest):
+    """
+    Fetch PDF from URL and extract text content.
+
+    Request body:
+    - url: The attachment URL from DocumentReference
+    - token: Bearer token for authentication
+
+    Returns extracted text, page count, and metadata.
+    """
+    MAX_SIZE_MB = 10
+    MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                request.url,
+                headers={
+                    "Authorization": f"Bearer {request.token}",
+                    "Accept": "application/pdf"
+                }
+            )
+
+            if response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Unauthorized - token may be expired")
+            elif response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Document not found at URL")
+            elif response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to fetch PDF: {response.status_code}"
+                )
+
+            content_length = len(response.content)
+            if content_length > MAX_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"PDF too large ({content_length / 1024 / 1024:.1f}MB). Max size is {MAX_SIZE_MB}MB"
+                )
+
+            pdf_bytes = io.BytesIO(response.content)
+
+            extracted_text = []
+            page_count = 0
+            metadata = {}
+
+            with pdfplumber.open(pdf_bytes) as pdf:
+                page_count = len(pdf.pages)
+                metadata = pdf.metadata or {}
+
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        extracted_text.append(text)
+
+            full_text = "\n\n".join(extracted_text)
+
+            return {
+                "success": True,
+                "text": full_text,
+                "page_count": page_count,
+                "char_count": len(full_text),
+                "metadata": {
+                    "title": metadata.get("Title", ""),
+                    "author": metadata.get("Author", ""),
+                    "creator": metadata.get("Creator", ""),
+                    "creation_date": metadata.get("CreationDate", "")
+                }
+            }
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timeout while fetching PDF")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Network error: {str(e)}")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
 
 
 # Catch-all for other endpoints

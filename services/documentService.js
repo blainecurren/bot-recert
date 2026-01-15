@@ -3,7 +3,8 @@
  * Fetches clinical documents and attachments for patients
  */
 
-const { fhirGet } = require('./fhirClient');
+const { fhirGet, getAccessToken } = require('./fhirClient');
+const { client: pythonBackend } = require('./pythonBackendClient');
 
 /**
  * Get all documents for a patient
@@ -124,10 +125,50 @@ async function getDocumentTypes(patientId) {
         .sort((a, b) => b.count - a.count);
 }
 
+/**
+ * Extract text content from a PDF attachment
+ * @param {string} attachmentUrl - URL to the PDF attachment
+ * @returns {Promise<Object>} Extracted text and metadata
+ */
+async function extractDocumentText(attachmentUrl) {
+    if (!attachmentUrl) {
+        throw new Error('Attachment URL is required');
+    }
+
+    console.log(`[DocumentService] Extracting text from: ${attachmentUrl}`);
+
+    try {
+        const token = await getAccessToken();
+
+        const response = await pythonBackend.post('/documents/extract-text', {
+            url: attachmentUrl,
+            token: token
+        });
+
+        console.log(`[DocumentService] Extracted ${response.data.char_count} characters from ${response.data.page_count} pages`);
+
+        return response.data;
+
+    } catch (error) {
+        const status = error.response?.status;
+        const detail = error.response?.data?.detail || error.message;
+
+        console.error(`[DocumentService] Text extraction failed (${status}):`, detail);
+
+        return {
+            success: false,
+            error: detail,
+            text: null,
+            page_count: 0
+        };
+    }
+}
+
 module.exports = {
     getPatientDocuments,
     getDocumentsByType,
     getRecentDocuments,
     getDownloadableDocuments,
-    getDocumentTypes
+    getDocumentTypes,
+    extractDocumentText
 };
