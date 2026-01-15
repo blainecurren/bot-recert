@@ -696,7 +696,9 @@ app.post('/api/messages', async (req, res) => {
         });
     } catch (error) {
         console.error('Error processing activity:', error);
-        res.status(500).send({ error: error.message });
+        if (!res.headersSent) {
+            res.status(500).send({ error: error.message });
+        }
     }
 });
 
