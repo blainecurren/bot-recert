@@ -112,8 +112,8 @@ const RESOURCE_METHOD_MAP = {
     'MedicationRequest': { method: 'getMedications', needsPatientId: true },
 
     // Organizations
-    'Organization-Agency': { method: 'getAgency', needsPatientId: false },
-    'Organization-Branch': { method: 'getBranch', needsPatientId: false },
+    'Organization-Agency': { method: 'getAgency', needsPatientId: true },
+    'Organization-Branch': { method: 'getBranch', needsPatientId: true },
     'Organization-Team': { method: 'getTeam', needsPatientId: true },
     'Organization-PayorSource': { method: 'getPayorSource', needsPatientId: true },
 
@@ -254,6 +254,8 @@ function formatSimpleData(resourceId, data) {
     switch (resourceId) {
         case 'Patient':
             return formatPatientData(data);
+        case 'RelatedPerson':
+            return formatRelatedPerson(data);
         case 'AllergyIntolerance':
             return formatAllergies(data);
         case 'MedicationRequest':
@@ -267,8 +269,53 @@ function formatSimpleData(resourceId, data) {
         case 'Observation-HeadCircumference':
         case 'Observation-BodyMass':
             return formatVitals(resourceId, data);
+        case 'Observation-LivingArrangement':
+            return formatLivingArrangement(data);
+        case 'Observation-WoundAssessment':
+        case 'Observation-WoundAssessmentDetails':
+            return formatWoundAssessment(data);
         case 'CareTeam':
+        case 'Organization-Team':
             return formatCareTeam(data);
+        case 'CarePlan-AideHomecare':
+        case 'CarePlan-PersonalCare':
+            return formatCarePlan(data);
+        case 'Condition-Diagnoses':
+            return formatDiagnoses(data);
+        case 'Condition-Wound':
+            return formatWoundCondition(data);
+        case 'Organization-Agency':
+        case 'Organization-Branch':
+            return formatOrganization(data);
+        case 'Organization-PayorSource':
+            return formatPayorSource(data);
+        case 'Appointment-Visit':
+        case 'Appointment-Schedule':
+        case 'Appointment-IDG':
+            return formatAppointments(data);
+        case 'EpisodeOfCare':
+            return formatEpisodeOfCare(data);
+        case 'Encounter':
+            return formatEncounters(data);
+        case 'Practitioner-Physician':
+            return formatPhysician(data);
+        case 'Practitioner-Worker':
+            return formatWorker(data);
+        case 'Location-ServiceLocation':
+        case 'Location-WorkerLocation':
+            return formatLocation(data);
+        case 'ServiceRequest-ReferralOrder':
+            return formatReferralOrders(data);
+        case 'Account':
+            return formatAccount(data);
+        case 'DocumentReference-CoordinationNote':
+        case 'DocumentReference-EpisodeDocument':
+        case 'DocumentReference-IDGMeetingNote':
+        case 'DocumentReference-PatientDocument':
+        case 'DocumentReference-PatientSignature':
+        case 'DocumentReference-TherapyGoalsStatus':
+        case 'DocumentReference-VisitDocument':
+            return formatDocumentReferences(data);
         default:
             return formatGenericData(data);
     }
@@ -348,6 +395,302 @@ function formatCareTeam(data) {
     });
 
     return { isEmpty: false, formatted: lines.join('\n') };
+}
+
+function formatOrganization(data) {
+    if (!data) return { isEmpty: true, formatted: 'No organization data' };
+
+    // Handle array of organizations
+    const orgs = Array.isArray(data) ? data : [data];
+
+    if (orgs.length === 0) return { isEmpty: true, formatted: 'No organization data' };
+
+    const lines = [];
+    orgs.forEach(org => {
+        if (org.name) lines.push(`**${org.name}**${org.alias ? ` (${org.alias})` : ''}`);
+        if (org.phone) lines.push(`Phone: ${org.phone}`);
+        if (org.address) lines.push(`Address: ${org.address}`);
+        if (org.type && org.type !== 'Agency' && org.type !== 'Branch' && org.type !== 'branch') {
+            lines.push(`Type: ${org.type}`);
+        }
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatRelatedPerson(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No contacts found' };
+    }
+
+    const persons = Array.isArray(data) ? data : [data];
+    const lines = persons.map(person => {
+        const parts = [`**${person.name || 'Unknown'}**`];
+        if (person.relationship) parts.push(`Relationship: ${person.relationship}`);
+        if (person.phone) parts.push(`Phone: ${person.phone}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatCarePlan(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No care plan found' };
+    }
+
+    const plans = Array.isArray(data) ? data : [data];
+    const lines = plans.map(plan => {
+        const parts = [];
+        if (plan.title || plan.description) parts.push(`**${plan.title || plan.description}**`);
+        if (plan.status) parts.push(`Status: ${plan.status}`);
+        if (plan.period) {
+            const start = plan.period.start || plan.periodStart || '';
+            const end = plan.period.end || plan.periodEnd || '';
+            if (start || end) parts.push(`Period: ${start} to ${end}`);
+        }
+        if (plan.activities) parts.push(`Activities: ${plan.activities}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatDiagnoses(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No diagnoses found' };
+    }
+
+    const conditions = Array.isArray(data) ? data : [data];
+    const lines = conditions.map(cond => {
+        const name = cond.display || cond.code?.text || cond.code?.coding?.[0]?.display || 'Unknown';
+        const code = cond.code?.coding?.[0]?.code || cond.code || '';
+        const status = cond.clinicalStatus || '';
+        return `- **${name}**${code ? ` (${code})` : ''}${status ? ` - ${status}` : ''}`;
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n') };
+}
+
+function formatWoundCondition(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No wounds documented' };
+    }
+
+    const wounds = Array.isArray(data) ? data : [data];
+    const lines = wounds.map(wound => {
+        const parts = [];
+        const name = wound.display || wound.code?.text || 'Wound';
+        parts.push(`**${name}**`);
+        if (wound.bodySite) parts.push(`Location: ${wound.bodySite}`);
+        if (wound.clinicalStatus) parts.push(`Status: ${wound.clinicalStatus}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatPayorSource(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No payor information found' };
+    }
+
+    const payors = Array.isArray(data) ? data : [data];
+    const lines = payors.map(payor => {
+        const parts = [];
+        if (payor.payor) parts.push(`**${payor.payor}**`);
+        if (payor.type) parts.push(`Type: ${payor.type}`);
+        if (payor.status) parts.push(`Status: ${payor.status}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatAppointments(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No appointments found' };
+    }
+
+    const appointments = Array.isArray(data) ? data : [data];
+    const lines = appointments.slice(0, 10).map(apt => {
+        const parts = [];
+        const date = apt.start || apt.date || '';
+        const type = apt.type || apt.appointmentType?.coding?.[0]?.display || '';
+        const status = apt.status || '';
+        parts.push(`- **${date}**${type ? ` - ${type}` : ''}${status ? ` (${status})` : ''}`);
+        if (apt.participants) parts.push(`  Participants: ${apt.participants.join(', ')}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n') };
+}
+
+function formatEpisodeOfCare(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No episodes found' };
+    }
+
+    const episodes = Array.isArray(data) ? data : [data];
+    const lines = episodes.map(ep => {
+        const parts = [];
+        if (ep.type) parts.push(`**${ep.type}**`);
+        if (ep.status) parts.push(`Status: ${ep.status}`);
+        const start = ep.periodStart || ep.period?.start || '';
+        const end = ep.periodEnd || ep.period?.end || '';
+        if (start || end) parts.push(`Period: ${start} to ${end}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatEncounters(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No encounters found' };
+    }
+
+    const encounters = Array.isArray(data) ? data : [data];
+    const lines = encounters.slice(0, 10).map(enc => {
+        const date = enc.date || enc.period?.start || '';
+        const type = enc.type || '';
+        const status = enc.status || '';
+        const reason = enc.reasonCode || '';
+        return `- **${date}**${type ? ` - ${type}` : ''}${status ? ` (${status})` : ''}${reason ? `\n  Reason: ${reason}` : ''}`;
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n') };
+}
+
+function formatPhysician(data) {
+    if (!data) return { isEmpty: true, formatted: 'No physician assigned' };
+
+    const lines = [];
+    if (data.name) lines.push(`**${data.name}**`);
+    if (data.specialty) lines.push(`Specialty: ${data.specialty}`);
+    if (data.phone) lines.push(`Phone: ${data.phone}`);
+
+    return { isEmpty: lines.length === 0, formatted: lines.join('\n') || 'No physician data' };
+}
+
+function formatWorker(data) {
+    if (!data) return { isEmpty: true, formatted: 'No worker information' };
+
+    const lines = [];
+    if (data.name) lines.push(`**${data.name}**`);
+    if (data.identifier) lines.push(`ID: ${data.identifier}`);
+    if (data.active !== undefined) lines.push(`Status: ${data.active ? 'Active' : 'Inactive'}`);
+
+    return { isEmpty: lines.length === 0, formatted: lines.join('\n') || 'No worker data' };
+}
+
+function formatLocation(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No location data' };
+    }
+
+    const locations = Array.isArray(data) ? data : [data];
+    const lines = locations.map(loc => {
+        const parts = [];
+        if (loc.name) parts.push(`**${loc.name}**`);
+        if (loc.type) parts.push(`Type: ${loc.type}`);
+        if (loc.address) parts.push(`Address: ${loc.address}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatReferralOrders(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No referral orders found' };
+    }
+
+    const orders = Array.isArray(data) ? data : [data];
+    const lines = orders.map(order => {
+        const parts = [];
+        if (order.code) parts.push(`**${order.code}**`);
+        if (order.status) parts.push(`Status: ${order.status}`);
+        if (order.intent) parts.push(`Intent: ${order.intent}`);
+        if (order.authoredOn) parts.push(`Date: ${order.authoredOn}`);
+        if (order.requester) parts.push(`Requester: ${order.requester}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatAccount(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No account information' };
+    }
+
+    const accounts = Array.isArray(data) ? data : [data];
+    const lines = accounts.map(acct => {
+        const parts = [];
+        if (acct.name) parts.push(`**${acct.name}**`);
+        if (acct.type) parts.push(`Type: ${acct.type}`);
+        if (acct.status) parts.push(`Status: ${acct.status}`);
+        if (acct.servicePeriod) {
+            const start = acct.servicePeriod.start || '';
+            const end = acct.servicePeriod.end || '';
+            if (start || end) parts.push(`Service Period: ${start} to ${end}`);
+        }
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
+}
+
+function formatDocumentReferences(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No documents found' };
+    }
+
+    const docs = Array.isArray(data) ? data : [data];
+    const lines = docs.slice(0, 15).map(doc => {
+        const parts = [];
+        const type = doc.type || 'Document';
+        const date = doc.date || '';
+        parts.push(`- **${type}**${date ? ` (${date})` : ''}`);
+        if (doc.author) parts.push(`  Author: ${doc.author}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n') };
+}
+
+function formatLivingArrangement(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No living arrangement data' };
+    }
+
+    const items = Array.isArray(data) ? data : [data];
+    const lines = items.map(item => {
+        const value = item.value || item.valueString || item.valueCodeableConcept?.text || '';
+        const date = item.date || item.effectiveDateTime || '';
+        return `- ${date ? `${date}: ` : ''}**${value || 'Unknown'}**`;
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n') };
+}
+
+function formatWoundAssessment(data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+        return { isEmpty: true, formatted: 'No wound assessments found' };
+    }
+
+    const assessments = Array.isArray(data) ? data : [data];
+    const lines = assessments.map(assess => {
+        const parts = [];
+        const type = assess.type || 'Assessment';
+        const date = assess.date || assess.effectiveDateTime || '';
+        parts.push(`**${type}**${date ? ` (${date})` : ''}`);
+        if (assess.value) parts.push(`Result: ${assess.value}`);
+        return parts.join('\n');
+    });
+
+    return { isEmpty: false, formatted: lines.join('\n\n') };
 }
 
 function formatGenericData(data) {

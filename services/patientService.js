@@ -197,7 +197,18 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             console.log(`[PatientService] Getting patients via Python backend for worker ${workerId} on ${dateStr}`);
             const result = await pythonBackend.getWorkerPatients(workerId, dateStr);
             if (result.data && result.data.length > 0) {
-                return result.data;
+                // Filter by valid visit type codes
+                const totalCount = result.data.length;
+                const filtered = result.data.filter(patient => {
+                    const visitTypeCode = patient.visitTypeCode || patient.visitType?.split(' ')?.[0] || '';
+                    const isValid = fhirService.isValidVisitTypeCode(visitTypeCode);
+                    if (!isValid) {
+                        console.log(`[PatientService] Filtering out patient with visit type: ${patient.visitType}`);
+                    }
+                    return isValid;
+                });
+                console.log(`[PatientService] Filtered ${totalCount - filtered.length} of ${totalCount} patients by visit type`);
+                return filtered;
             }
             console.log('[PatientService] No patients from Python backend, trying FHIR');
         } catch (error) {
@@ -227,13 +238,29 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             return [];
         }
 
-        console.log(`[PatientService] Found ${bundle.entry.length} appointments`);
+        const totalAppointments = bundle.entry.length;
+        console.log(`[PatientService] Found ${totalAppointments} total appointments`);
 
         const scheduledPatients = [];
         const seenPatientIds = new Set();
+        let skippedCount = 0;
 
         for (const entry of bundle.entry) {
             const appointment = entry.resource;
+
+            // Get service type code (discipline-specific: SN11, RN10, LVN11WC, etc.)
+            const serviceTypeCode = appointment.serviceType?.[0]?.coding?.[0]?.code || '';
+            const serviceTypeDisplay = appointment.serviceType?.[0]?.coding?.[0]?.display || '';
+            const appointmentTypeCode = appointment.appointmentType?.coding?.[0]?.code || '';
+
+            console.log(`[PatientService] Appointment ${appointment.id}: serviceType="${serviceTypeCode}" (${serviceTypeDisplay}), appointmentType="${appointmentTypeCode}"`);
+
+            // Filter by serviceType code (discipline-specific codes like SN11, RN10, LVN11WC)
+            if (!fhirService.isValidVisitTypeCode(serviceTypeCode)) {
+                console.log(`[PatientService] Skipping appointment with invalid service type: ${serviceTypeCode}`);
+                skippedCount++;
+                continue;
+            }
 
             // HCHB stores patient in extension, not participant
             // Look for extension with url "https://api.hchb.com/fhir/r4/StructureDefinition/subject"
@@ -276,22 +303,42 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
 
             if (patient) {
                 const name = patient.name?.[0] || {};
-                const appointmentType = appointment.appointmentType?.coding?.[0]?.display ||
-                                       appointment.serviceType?.[0]?.coding?.[0]?.display ||
-                                       'Visit';
+                // Use serviceType for visit type display (more specific discipline codes)
+                const svcCode = appointment.serviceType?.[0]?.coding?.[0]?.code || '';
+                const svcDisplay = appointment.serviceType?.[0]?.coding?.[0]?.display || '';
+                // Format: "SN11 - SN SUBSEQUENT VISIT" or just the display if no code
+                const visitType = svcCode && svcDisplay
+                    ? `${svcCode} - ${svcDisplay}`
+                    : svcDisplay || svcCode || 'Visit';
 
-                scheduledPatients.push({
+                // Debug: log patient name data
+                console.log(`[PatientService] Patient ${patient.id} name data:`, JSON.stringify(patient.name));
+
+                // Build name with fallbacks
+                const firstName = name.given?.[0] || '';
+                const lastName = name.family || '';
+                let fullName = name.text || `${firstName} ${lastName}`.trim();
+
+                // If no name available, use patient ID as fallback
+                if (!fullName) {
+                    fullName = `Patient ${patient.id}`;
+                    console.log(`[PatientService] Warning: No name found for patient ${patient.id}`);
+                }
+
+                const patientData = {
                     id: patient.id,
                     appointmentId: appointment.id,
-                    firstName: name.given?.[0] || '',
-                    lastName: name.family || '',
-                    fullName: name.text || `${name.given?.[0] || ''} ${name.family || ''}`.trim(),
+                    firstName: firstName || fullName.split(' ')[0] || 'Unknown',
+                    lastName: lastName || fullName.split(' ').slice(1).join(' ') || '',
+                    fullName: fullName,
                     dob: patient.birthDate,
                     mrn: patient.identifier?.find(id => id.type?.coding?.[0]?.code === 'MR')?.value || patient.id,
                     visitTime: appointment.start ? new Date(appointment.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'TBD',
-                    visitType: appointmentType,
+                    visitType: visitType,
                     status: appointment.status
-                });
+                };
+                console.log(`[PatientService] Adding patient: ${patientData.lastName}, ${patientData.firstName}`);
+                scheduledPatients.push(patientData);
             }
         }
 
@@ -302,7 +349,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             return a.visitTime.localeCompare(b.visitTime);
         });
 
-        console.log(`[PatientService] Found ${scheduledPatients.length} patients for ${dateStr}`);
+        console.log(`[PatientService] Found ${scheduledPatients.length} patients for ${dateStr} (filtered ${skippedCount} of ${totalAppointments} appointments by visit type)`);
         return scheduledPatients;
 
     } catch (error) {

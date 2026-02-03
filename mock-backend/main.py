@@ -12,6 +12,18 @@ import random
 import httpx
 import pdfplumber
 import io
+import os
+import base64
+from openai import AzureOpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from parent directory's .env
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+# Azure OpenAI configuration for Vision OCR
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
 
 class ExtractTextRequest(BaseModel):
@@ -45,7 +57,8 @@ MOCK_PATIENTS = [
         "dob": "1945-03-15",
         "mrn": "MRN001",
         "visitTime": "9:00 AM",
-        "visitType": "Skilled Nursing",
+        "visitType": "SN11 (Skilled Nursing)",
+        "visitTypeCode": "SN11",
         "status": "booked"
     },
     {
@@ -56,7 +69,8 @@ MOCK_PATIENTS = [
         "dob": "1952-07-22",
         "mrn": "MRN002",
         "visitTime": "10:30 AM",
-        "visitType": "Physical Therapy",
+        "visitType": "PT11 (Physical Therapy)",
+        "visitTypeCode": "PT11",
         "status": "booked"
     },
     {
@@ -67,7 +81,8 @@ MOCK_PATIENTS = [
         "dob": "1938-11-08",
         "mrn": "MRN003",
         "visitTime": "1:00 PM",
-        "visitType": "Wound Care",
+        "visitType": "RN11WC (Wound Care)",
+        "visitTypeCode": "RN11WC",
         "status": "booked"
     },
     {
@@ -78,7 +93,32 @@ MOCK_PATIENTS = [
         "dob": "1960-05-30",
         "mrn": "MRN004",
         "visitTime": "2:30 PM",
-        "visitType": "Medication Management",
+        "visitType": "ADMIN (Administrative)",
+        "visitTypeCode": "ADMIN",
+        "status": "booked"
+    },
+    {
+        "id": "P005",
+        "firstName": "James",
+        "lastName": "Davis",
+        "fullName": "Davis, James",
+        "dob": "1955-09-12",
+        "mrn": "MRN005",
+        "visitTime": "3:30 PM",
+        "visitType": "OT11 (Occupational Therapy)",
+        "visitTypeCode": "OT11",
+        "status": "booked"
+    },
+    {
+        "id": "P006",
+        "firstName": "Linda",
+        "lastName": "Miller",
+        "fullName": "Miller, Linda",
+        "dob": "1948-12-03",
+        "mrn": "MRN006",
+        "visitTime": "4:00 PM",
+        "visitType": "PHONE (Phone Call)",
+        "visitTypeCode": "PHONE",
         "status": "booked"
     },
 ]
@@ -262,10 +302,95 @@ async def get_documents(patient_id: str, doc_type: str):
     }
 
 
+def extract_text_with_vision(pdf_bytes: bytes, page_count: int) -> str:
+    """
+    Use GPT-4o Vision to extract text from scanned/image-based PDFs.
+    Converts PDF pages to images using PyMuPDF and sends to Azure OpenAI.
+    """
+    if not all([AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT]):
+        raise Exception("Azure OpenAI not configured for Vision OCR")
+
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        raise Exception("PyMuPDF required for Vision OCR. Install with: pip install PyMuPDF")
+
+    print(f"[Vision OCR] Converting {page_count} PDF pages to images...")
+
+    # Open PDF with PyMuPDF
+    pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    # Limit to first 5 pages for cost/speed
+    max_pages = min(page_count, 5)
+
+    # Initialize Azure OpenAI client
+    client = AzureOpenAI(
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
+        api_key=AZURE_OPENAI_API_KEY,
+        api_version="2024-08-01-preview"
+    )
+
+    extracted_texts = []
+
+    for i in range(max_pages):
+        print(f"[Vision OCR] Processing page {i + 1}/{max_pages}...")
+
+        # Get page and render to image
+        page = pdf_doc[i]
+        # Render at 150 DPI (default is 72)
+        mat = fitz.Matrix(150/72, 150/72)
+        pix = page.get_pixmap(matrix=mat)
+
+        # Convert to PNG bytes
+        img_bytes = pix.tobytes("png")
+        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+        # Send to GPT-4o Vision
+        response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an OCR assistant. Extract ALL text from this medical document image exactly as written. Preserve formatting, line breaks, and structure. Include all headers, dates, names, values, and notes. Do not summarize - extract the complete text."
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract all text from this medical document page:"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{img_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=4000,
+            temperature=0.1
+        )
+
+        page_text = response.choices[0].message.content
+        if page_text:
+            extracted_texts.append(f"--- Page {i + 1} ---\n{page_text}")
+
+    pdf_doc.close()
+
+    full_text = "\n\n".join(extracted_texts)
+    print(f"[Vision OCR] Extracted {len(full_text)} characters from {max_pages} pages")
+    return full_text
+
+
 @app.post("/api/v1/documents/extract-text")
 async def extract_text_from_pdf(request: ExtractTextRequest):
     """
     Fetch PDF from URL and extract text content.
+
+    Uses pdfplumber for text-based PDFs, falls back to GPT-4o Vision for scanned/image PDFs.
 
     Request body:
     - url: The attachment URL from DocumentReference
@@ -303,12 +428,15 @@ async def extract_text_from_pdf(request: ExtractTextRequest):
                     detail=f"PDF too large ({content_length / 1024 / 1024:.1f}MB). Max size is {MAX_SIZE_MB}MB"
                 )
 
-            pdf_bytes = io.BytesIO(response.content)
+            pdf_content = response.content
+            pdf_bytes = io.BytesIO(pdf_content)
 
             extracted_text = []
             page_count = 0
             metadata = {}
+            used_vision = False
 
+            # First, try pdfplumber for text-based PDFs
             with pdfplumber.open(pdf_bytes) as pdf:
                 page_count = len(pdf.pages)
                 metadata = pdf.metadata or {}
@@ -320,11 +448,23 @@ async def extract_text_from_pdf(request: ExtractTextRequest):
 
             full_text = "\n\n".join(extracted_text)
 
+            # If no text extracted, fall back to Vision OCR
+            if len(full_text.strip()) < 50 and page_count > 0:
+                print(f"[Extract] No text from pdfplumber ({len(full_text)} chars), trying Vision OCR...")
+                try:
+                    full_text = extract_text_with_vision(pdf_content, page_count)
+                    used_vision = True
+                except Exception as vision_error:
+                    print(f"[Extract] Vision OCR failed: {vision_error}")
+                    # Return what we have, even if empty
+                    pass
+
             return {
                 "success": True,
                 "text": full_text,
                 "page_count": page_count,
                 "char_count": len(full_text),
+                "used_vision_ocr": used_vision,
                 "metadata": {
                     "title": metadata.get("Title", ""),
                     "author": metadata.get("Author", ""),

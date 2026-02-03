@@ -155,90 +155,39 @@ function buildPatientSelectionCard(worker, patients, selectedDate) {
             }
         ];
     } else {
-        // Add each patient as a selectable item
+        // Add each patient as a selectable item with visit type
         patients.forEach((patient) => {
-            const patientContainer = {
+            const patientName = patient.lastName + ", " + patient.firstName;
+
+            // Container with patient button and visit type underneath
+            card.body.push({
                 "type": "Container",
-                "style": "default",
-                "spacing": "Medium",
-                "selectAction": {
-                    "type": "Action.Submit",
-                    "data": {
-                        "action": "selectPatient",
-                        "patientId": patient.id,
-                        "patientName": `${patient.lastName}, ${patient.firstName}`
-                    }
-                },
+                "spacing": "Small",
                 "items": [
                     {
-                        "type": "ColumnSet",
-                        "columns": [
+                        "type": "ActionSet",
+                        "actions": [
                             {
-                                "type": "Column",
-                                "width": "stretch",
-                                "items": [
-                                    {
-                                        "type": "TextBlock",
-                                        "text": `${patient.lastName}, ${patient.firstName}`,
-                                        "weight": "Bolder",
-                                        "wrap": true
-                                    },
-                                    {
-                                        "type": "TextBlock",
-                                        "text": `MRN: ${patient.mrn}`,
-                                        "size": "Small",
-                                        "isSubtle": true,
-                                        "spacing": "None"
-                                    }
-                                ]
-                            },
-                            {
-                                "type": "Column",
-                                "width": "auto",
-                                "verticalContentAlignment": "Center",
-                                "items": [
-                                    {
-                                        "type": "TextBlock",
-                                        "text": patient.visitTime,
-                                        "weight": "Bolder",
-                                        "size": "Small"
-                                    },
-                                    {
-                                        "type": "TextBlock",
-                                        "text": patient.visitType,
-                                        "size": "Small",
-                                        "isSubtle": true,
-                                        "spacing": "None"
-                                    }
-                                ]
-                            },
-                            {
-                                "type": "Column",
-                                "width": "auto",
-                                "verticalContentAlignment": "Center",
-                                "items": [
-                                    {
-                                        "type": "ActionSet",
-                                        "actions": [
-                                            {
-                                                "type": "Action.Submit",
-                                                "title": "Select",
-                                                "style": "positive",
-                                                "data": {
-                                                    "action": "selectPatient",
-                                                    "patientId": patient.id,
-                                                    "patientName": `${patient.lastName}, ${patient.firstName}`
-                                                }
-                                            }
-                                        ]
-                                    }
-                                ]
+                                "type": "Action.Submit",
+                                "title": patientName + " (" + patient.visitTime + ")",
+                                "data": {
+                                    "action": "selectPatient",
+                                    "patientId": patient.id,
+                                    "patientName": patientName
+                                }
                             }
                         ]
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": patient.visitType || "Visit",
+                        "size": "Small",
+                        "isSubtle": true,
+                        "spacing": "None",
+                        "horizontalAlignment": "Center"
                     }
                 ]
-            };
-            card.body.push(patientContainer);
+            });
         });
 
         // Navigation buttons
@@ -256,6 +205,7 @@ function buildPatientSelectionCard(worker, patients, selectedDate) {
         ];
     }
 
+    console.log('[CardBuilder] Final card body item 2:', JSON.stringify(card.body[2], null, 2));
     return card;
 }
 
@@ -1432,14 +1382,16 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                 contentItems.push({
                     "type": "TextBlock",
                     "text": result.summary,
-                    "wrap": true
+                    "wrap": true,
+                    "color": "Dark"
                 });
             } else if (result.formatted) {
                 // Formatted data
                 contentItems.push({
                     "type": "TextBlock",
                     "text": result.formatted.formatted || result.formatted,
-                    "wrap": true
+                    "wrap": true,
+                    "color": "Dark"
                 });
             } else if (result.data) {
                 // Raw data - format it
@@ -1447,13 +1399,15 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                     contentItems.push({
                         "type": "TextBlock",
                         "text": "No data available",
-                        "isSubtle": true
+                        "isSubtle": true,
+                        "color": "Dark"
                     });
                 } else if (result.data.placeholder) {
                     contentItems.push({
                         "type": "TextBlock",
                         "text": result.data.message || "Data fetch not yet implemented",
-                        "isSubtle": true
+                        "isSubtle": true,
+                        "color": "Dark"
                     });
                 } else {
                     // Try to format the data nicely
@@ -1465,14 +1419,16 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                         "text": dataStr,
                         "wrap": true,
                         "fontType": "Monospace",
-                        "size": "Small"
+                        "size": "Small",
+                        "color": "Dark"
                     });
                 }
             } else {
                 contentItems.push({
                     "type": "TextBlock",
                     "text": "No data available",
-                    "isSubtle": true
+                    "isSubtle": true,
+                    "color": "Dark"
                 });
             }
 
@@ -1794,6 +1750,277 @@ function getDaysUntil(dateStr) {
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
+/**
+ * Build the AI document summary card for a patient
+ * Shows consolidated summary and individual document summaries
+ * @param {Object} patient - Patient object
+ * @param {Object} summaryData - Pre-loaded summary data from documentService
+ * @param {Object} worker - Worker info object
+ * @returns {Object} AI Summary card JSON
+ */
+function buildAISummaryCard(patient, summaryData, worker) {
+    const patientName = patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`;
+
+    const card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.5",
+        "body": [
+            {
+                "type": "Container",
+                "style": "emphasis",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "AI Clinical Summary",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "Accent"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": `Patient: ${patientName}`,
+                        "size": "Small",
+                        "spacing": "None",
+                        "color": "Accent"
+                    }
+                ],
+                "bleed": true
+            }
+        ],
+        "actions": []
+    };
+
+    // Check if we have summary data
+    if (!summaryData || !summaryData.success) {
+        card.body.push({
+            "type": "Container",
+            "style": "warning",
+            "spacing": "Medium",
+            "items": [
+                {
+                    "type": "TextBlock",
+                    "text": summaryData?.error || "No AI summary available for this patient. Documents may still be processing or no PDF documents were found.",
+                    "wrap": true
+                }
+            ]
+        });
+    } else {
+        // Add stats
+        card.body.push({
+            "type": "ColumnSet",
+            "spacing": "Medium",
+            "columns": [
+                {
+                    "type": "Column",
+                    "width": "auto",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": String(summaryData.totalDocuments || 0),
+                            "size": "ExtraLarge",
+                            "weight": "Bolder",
+                            "color": "Accent",
+                            "horizontalAlignment": "Center"
+                        },
+                        {
+                            "type": "TextBlock",
+                            "text": "Total Docs",
+                            "size": "Small",
+                            "isSubtle": true,
+                            "horizontalAlignment": "Center",
+                            "spacing": "None"
+                        }
+                    ]
+                },
+                {
+                    "type": "Column",
+                    "width": "auto",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": String(summaryData.processedCount || 0),
+                            "size": "ExtraLarge",
+                            "weight": "Bolder",
+                            "color": "Good",
+                            "horizontalAlignment": "Center"
+                        },
+                        {
+                            "type": "TextBlock",
+                            "text": "Analyzed",
+                            "size": "Small",
+                            "isSubtle": true,
+                            "horizontalAlignment": "Center",
+                            "spacing": "None"
+                        }
+                    ]
+                },
+                {
+                    "type": "Column",
+                    "width": "auto",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": String(summaryData.documents?.filter(d => d.summary).length || 0),
+                            "size": "ExtraLarge",
+                            "weight": "Bolder",
+                            "color": "Good",
+                            "horizontalAlignment": "Center"
+                        },
+                        {
+                            "type": "TextBlock",
+                            "text": "Summaries",
+                            "size": "Small",
+                            "isSubtle": true,
+                            "horizontalAlignment": "Center",
+                            "spacing": "None"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        // Add consolidated summary if available
+        if (summaryData.consolidated && summaryData.consolidated.summary) {
+            card.body.push({
+                "type": "Container",
+                "style": "good",
+                "spacing": "Medium",
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": "Consolidated Clinical Summary",
+                        "weight": "Bolder",
+                        "color": "Good"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": summaryData.consolidated.summary,
+                        "wrap": true,
+                        "spacing": "Small"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": `Based on ${summaryData.consolidated.documentCount} document(s)`,
+                        "size": "Small",
+                        "isSubtle": true,
+                        "spacing": "Small"
+                    }
+                ]
+            });
+        }
+
+        // Add individual document summaries as expandable sections
+        if (summaryData.documents && summaryData.documents.length > 0) {
+            const expandableActions = [];
+
+            summaryData.documents.forEach((doc, index) => {
+                const docTitle = `${doc.documentType || 'Document'} (${doc.documentDate || 'N/A'})`;
+
+                let contentItems = [];
+
+                if (doc.summary) {
+                    contentItems.push({
+                        "type": "TextBlock",
+                        "text": doc.summary,
+                        "wrap": true
+                    });
+
+                    if (doc.pageCount) {
+                        contentItems.push({
+                            "type": "TextBlock",
+                            "text": `${doc.pageCount} page(s), ${doc.charCount?.toLocaleString() || 0} characters`,
+                            "size": "Small",
+                            "isSubtle": true,
+                            "spacing": "Small"
+                        });
+                    }
+                } else if (doc.error) {
+                    contentItems.push({
+                        "type": "TextBlock",
+                        "text": `Error: ${doc.error}`,
+                        "color": "Attention",
+                        "wrap": true
+                    });
+                } else {
+                    contentItems.push({
+                        "type": "TextBlock",
+                        "text": "No summary available",
+                        "isSubtle": true
+                    });
+                }
+
+                expandableActions.push({
+                    "type": "Action.ShowCard",
+                    "title": docTitle,
+                    "card": {
+                        "type": "AdaptiveCard",
+                        "body": [
+                            {
+                                "type": "TextBlock",
+                                "text": doc.description || docTitle,
+                                "weight": "Bolder",
+                                "wrap": true
+                            },
+                            ...contentItems
+                        ]
+                    }
+                });
+            });
+
+            // Add document summaries section header
+            card.body.push({
+                "type": "TextBlock",
+                "text": "Individual Document Summaries",
+                "weight": "Bolder",
+                "spacing": "Large",
+                "separator": true
+            });
+
+            // Add expandable sections (max 6 per ActionSet due to Teams limits)
+            for (let i = 0; i < expandableActions.length; i += 6) {
+                const chunk = expandableActions.slice(i, i + 6);
+                card.body.push({
+                    "type": "ActionSet",
+                    "spacing": "Small",
+                    "actions": chunk
+                });
+            }
+        }
+    }
+
+    // Navigation actions
+    card.actions = [
+        {
+            "type": "Action.Submit",
+            "title": "View All Data",
+            "style": "positive",
+            "data": {
+                "action": "selectPatient",
+                "patientId": patient.id,
+                "patientName": patientName,
+                "skipSummary": true
+            }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "View Documents",
+            "data": {
+                "action": "viewDocuments",
+                "patientId": patient.id,
+                "patientName": patientName
+            }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "Back to Patients",
+            "data": { "action": "backToPatients" }
+        }
+    ];
+
+    return card;
+}
+
 module.exports = {
     getWelcomeCard,
     buildDateSelectionCard,
@@ -1801,6 +2028,7 @@ module.exports = {
     buildResourceSelectionCard,
     buildDataResultsCard,
     buildDocumentListCard,
+    buildAISummaryCard,
     buildRecertPatientListCard,
     buildProcessingCard,
     buildPatientListCard,

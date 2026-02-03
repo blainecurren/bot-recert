@@ -8,7 +8,7 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-const { ActivityHandler, BotFrameworkAdapter, CardFactory } = require('botbuilder');
+const { ActivityHandler, CloudAdapter, ConfigurationBotFrameworkAuthentication, CardFactory } = require('botbuilder');
 const express = require('express');
 
 // Import services and card builder
@@ -16,6 +16,7 @@ const patientService = require('./services/patientService');
 const summaryService = require('./services/summaryService');
 const dataFetchService = require('./services/dataFetchService');
 const documentService = require('./services/documentService');
+const azureOpenAI = require('./services/azureOpenAIService');
 const cardBuilder = require('./cards/cardBuilder');
 
 // Create server
@@ -25,13 +26,22 @@ app.use(express.json());
 // Create adapter - skip auth for local testing if LOCAL_DEBUG is set
 const LOCAL_DEBUG = process.env.LOCAL_DEBUG === 'true';
 
-const adapter = new BotFrameworkAdapter({
-    appId: LOCAL_DEBUG ? '' : process.env.MicrosoftAppId,
-    appPassword: LOCAL_DEBUG ? '' : process.env.MicrosoftAppPassword
-});
+let adapter;
 
 if (LOCAL_DEBUG) {
     console.log('*** LOCAL DEBUG MODE - Authentication disabled ***');
+    // Use empty credentials for local testing
+    const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication({});
+    adapter = new CloudAdapter(botFrameworkAuth);
+} else {
+    // Use full credentials for production/Azure
+    const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication({
+        MicrosoftAppId: process.env.MicrosoftAppId,
+        MicrosoftAppPassword: process.env.MicrosoftAppPassword,
+        MicrosoftAppType: process.env.MicrosoftAppType,
+        MicrosoftAppTenantId: process.env.MicrosoftAppTenantId
+    });
+    adapter = new CloudAdapter(botFrameworkAuth);
 }
 
 // Error handler
@@ -109,7 +119,7 @@ class RecertBot extends ActivityHandler {
                 break;
 
             case 'selectPatient':
-                await this.handlePatientSelect(context, value.patientId, value.patientName);
+                await this.handlePatientSelect(context, value.patientId, value.patientName, value.skipSummary === true);
                 break;
 
             case 'fetchResources':
@@ -197,10 +207,10 @@ class RecertBot extends ActivityHandler {
                 selectedPatient: null
             });
 
-            // Show date selection card
-            const dateCard = cardBuilder.buildDateSelectionCard(worker);
-            const card = CardFactory.adaptiveCard(dateCard);
-            await context.sendActivity({ attachments: [card] });
+            // Auto-load today's patients instead of showing date selection
+            const today = new Date().toISOString().split('T')[0];
+            await context.sendActivity(`Welcome, ${worker.name}! Loading your patients for today...`);
+            await this.handleLoadPatientsByDate(context, worker.id, today);
 
         } catch (error) {
             console.error('Error validating worker:', error);
@@ -253,9 +263,10 @@ class RecertBot extends ActivityHandler {
             const patients = await patientService.getPatientsByWorkerAndDate(workerId, selectedDate);
             console.log(`Found ${patients.length} patients for ${workerCtx.worker.name} on ${selectedDate}`);
 
-            // Update context
+            // Update context with patients
             workerCtx.selectedDate = selectedDate;
             workerCtx.patients = patients;
+            workerCtx.documentSummaries = {}; // Initialize empty summaries
             this.workerContext.set(conversationId, workerCtx);
 
             // Build and send the patient list card (single-select)
@@ -266,7 +277,11 @@ class RecertBot extends ActivityHandler {
             // If no patients found, add helpful message
             if (patients.length === 0) {
                 await context.sendActivity('No patients found for this date. Try selecting a different date or check your schedule in HCHB.');
+                return;
             }
+
+            // Pre-load document summaries in the background
+            await this.preloadDocumentSummaries(context, patients, conversationId);
 
         } catch (error) {
             console.error('Error loading patients by date:', error);
@@ -277,6 +292,58 @@ class RecertBot extends ActivityHandler {
             );
             const card = CardFactory.adaptiveCard(errorCard);
             await context.sendActivity({ attachments: [card] });
+        }
+    }
+
+    /**
+     * Pre-load document summaries for all patients
+     * Runs after patient list is displayed to provide AI summaries
+     */
+    async preloadDocumentSummaries(context, patients, conversationId) {
+        if (!patients || patients.length === 0) {
+            return;
+        }
+
+        try {
+            // Notify user that AI analysis is starting
+            await context.sendActivity(`Analyzing clinical documents for ${patients.length} patient(s)... This may take a moment.`);
+
+            console.log(`[Bot] Starting document pre-load for ${patients.length} patients`);
+            const startTime = Date.now();
+
+            // Batch fetch and summarize documents for all patients
+            const summaries = await documentService.batchFetchAndSummarizeDocuments(patients, {
+                maxDocsPerPatient: 5,
+                includeConsolidated: true
+            });
+
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            console.log(`[Bot] Document pre-load complete in ${elapsed}s`);
+
+            // Update the worker context with summaries
+            const workerCtx = this.workerContext.get(conversationId);
+            if (workerCtx) {
+                workerCtx.documentSummaries = summaries;
+                this.workerContext.set(conversationId, workerCtx);
+
+                // Count successful summaries
+                let totalDocs = 0;
+                let successfulSummaries = 0;
+                Object.values(summaries).forEach(patientSummary => {
+                    if (patientSummary.success) {
+                        totalDocs += patientSummary.processedCount || 0;
+                        successfulSummaries += patientSummary.documents?.filter(d => d.summary).length || 0;
+                    }
+                });
+
+                // Notify user that analysis is complete
+                await context.sendActivity(`AI analysis complete. Processed ${totalDocs} document(s) with ${successfulSummaries} summary(ies) ready. Select a patient to view their clinical summary.`);
+            }
+
+        } catch (error) {
+            console.error('[Bot] Error pre-loading document summaries:', error);
+            // Don't fail the whole flow, just log the error
+            await context.sendActivity('Note: Document analysis encountered some issues. You can still view patient data manually.');
         }
     }
 
@@ -421,16 +488,16 @@ class RecertBot extends ActivityHandler {
     }
 
     /**
-     * Handle patient selection - show resource selection card
+     * Handle patient selection - show AI summary card if available, otherwise resource selection
      */
-    async handlePatientSelect(context, patientId, patientName) {
+    async handlePatientSelect(context, patientId, patientName, skipSummary = false) {
         if (!patientId) {
             await context.sendActivity('Invalid patient selection.');
             await this.sendWelcomeCard(context);
             return;
         }
 
-        console.log(`Patient selected: ${patientId}`);
+        console.log(`Patient selected: ${patientId}, skipSummary: ${skipSummary}`);
 
         try {
             const conversationId = context.activity.conversation.id;
@@ -454,10 +521,21 @@ class RecertBot extends ActivityHandler {
             workerCtx.selectedPatient = patient;
             this.workerContext.set(conversationId, workerCtx);
 
-            // Show the resource selection card
-            const resourceCard = cardBuilder.buildResourceSelectionCard(patient, workerCtx.worker);
-            const card = CardFactory.adaptiveCard(resourceCard);
-            await context.sendActivity({ attachments: [card] });
+            // Check if we have pre-loaded AI summaries and should show them
+            const patientSummary = workerCtx.documentSummaries?.[patientId];
+
+            if (!skipSummary && patientSummary) {
+                // Show the AI summary card
+                console.log(`[Bot] Showing AI summary for patient ${patientId}`);
+                const summaryCard = cardBuilder.buildAISummaryCard(patient, patientSummary, workerCtx.worker);
+                const card = CardFactory.adaptiveCard(summaryCard);
+                await context.sendActivity({ attachments: [card] });
+            } else {
+                // Show the resource selection card
+                const resourceCard = cardBuilder.buildResourceSelectionCard(patient, workerCtx.worker);
+                const card = CardFactory.adaptiveCard(resourceCard);
+                await context.sendActivity({ attachments: [card] });
+            }
 
         } catch (error) {
             console.error('Error handling patient selection:', error);
@@ -521,6 +599,13 @@ class RecertBot extends ActivityHandler {
             this.workerContext.set(conversationId, workerCtx);
 
             // Build and send results card
+            console.log('[DEBUG] Results before card build:');
+            for (const [key, val] of Object.entries(results)) {
+                console.log(`  ${key}: hasData=${!!val.data}, hasSummary=${!!val.summary}, summaryLength=${val.summary?.length || 0}`);
+                if (val.summary) {
+                    console.log(`  Summary preview: ${val.summary.substring(0, 100)}...`);
+                }
+            }
             const resultsCard = cardBuilder.buildDataResultsCard(
                 workerCtx.selectedPatient,
                 results,
@@ -528,6 +613,7 @@ class RecertBot extends ActivityHandler {
             );
             const card = CardFactory.adaptiveCard(resultsCard);
             await context.sendActivity({ attachments: [card] });
+            console.log('[DEBUG] Results card sent to Teams');
 
         } catch (error) {
             console.error('Error fetching resources:', error);
@@ -541,41 +627,133 @@ class RecertBot extends ActivityHandler {
     }
 
     /**
-     * Generate AI summary for complex data types
-     * TODO: Integrate with Azure OpenAI
+     * Generate AI summary for complex data types using Azure OpenAI
      */
     async generateAISummary(resourceId, data) {
-        // Placeholder - will be replaced with Azure OpenAI integration
         if (!data || (Array.isArray(data) && data.length === 0)) {
             return 'No data available for summarization.';
         }
 
-        // For now, return a formatted summary based on data type
         const count = Array.isArray(data) ? data.length : 1;
         const resourceLabel = dataFetchService.getResourceLabel(resourceId);
 
-        // Create a basic summary based on the data
-        if (resourceId.startsWith('DocumentReference-')) {
-            return `Found ${count} document(s). AI summarization will be available when Azure OpenAI is configured.`;
-        } else if (resourceId.startsWith('CarePlan-')) {
-            return `Care plan contains ${count} goal(s) and intervention(s). AI summarization will provide detailed analysis when configured.`;
-        } else if (resourceId.startsWith('Condition-')) {
-            if (Array.isArray(data)) {
-                const conditions = data.map(c => c.display || c.code?.text || 'Unknown').join(', ');
-                return `**Conditions:** ${conditions}`;
-            }
-            return `Condition data available. AI will organize by priority when configured.`;
-        } else if (resourceId === 'EpisodeOfCare') {
-            if (Array.isArray(data) && data.length > 0) {
-                const episode = data[0];
-                return `**Episode:** ${episode.status || 'Active'}\n**Period:** ${episode.periodStart || 'N/A'} to ${episode.periodEnd || 'Ongoing'}`;
-            }
-            return 'Episode of care data available.';
-        } else if (resourceId === 'Encounter') {
-            return `Found ${count} encounter(s). AI will provide chronological summary when configured.`;
-        }
+        try {
+            // Handle DocumentReference types - these may have PDF attachments or inline content
+            if (resourceId.startsWith('DocumentReference-')) {
+                const docs = Array.isArray(data) ? data : [data];
+                const summaries = [];
 
-        return `${resourceLabel}: ${count} record(s) found. AI summarization pending configuration.`;
+                for (const doc of docs.slice(0, 3)) { // Limit to 3 docs for speed
+                    const docLabel = doc.description || doc.type || 'Document';
+                    const docDate = doc.date || 'N/A';
+
+                    // Try PDF extraction first if URL exists
+                    if (doc.url && doc.contentType === 'application/pdf') {
+                        try {
+                            const result = await documentService.extractAndSummarizeDocument(doc.url, {
+                                documentType: doc.type || resourceId.replace('DocumentReference-', '')
+                            });
+                            if (result.success && result.summary) {
+                                summaries.push(`**${docLabel} (${docDate}):**\n${result.summary}`);
+                                continue;
+                            }
+                        } catch (docError) {
+                            console.error(`[AI Summary] Error processing PDF:`, docError.message);
+                        }
+                    }
+
+                    // Fallback: summarize inline content (may be base64 encoded)
+                    if (doc.content && doc.content.length > 50) {
+                        try {
+                            // Decode base64 if needed
+                            let textContent = doc.content;
+                            if (doc.content.match(/^[A-Za-z0-9+/=]+$/)) {
+                                try {
+                                    textContent = Buffer.from(doc.content, 'base64').toString('utf-8');
+                                    console.log(`[AI Summary] Decoded base64 content: ${textContent.length} chars`);
+                                } catch (decodeErr) {
+                                    // Not base64, use as-is
+                                }
+                            }
+
+                            if (textContent && textContent.length > 20) {
+                                const result = await azureOpenAI.summarizeDocument(textContent, {
+                                    documentType: doc.type || 'clinical note',
+                                    maxTokens: 500
+                                });
+                                if (result.success && result.summary) {
+                                    summaries.push(`**${docLabel} (${docDate}):**\n${result.summary}`);
+                                    continue;
+                                }
+                            }
+                        } catch (err) {
+                            console.error(`[AI Summary] Error summarizing content:`, err.message);
+                        }
+                    }
+
+                    // Last resort: show basic info
+                    if (doc.description) {
+                        summaries.push(`**${docLabel} (${docDate}):** ${doc.description}`);
+                    } else if (doc.author) {
+                        summaries.push(`**${docLabel} (${docDate}):** Document by ${doc.author}`);
+                    }
+                }
+
+                if (summaries.length > 0) {
+                    return summaries.join('\n\n---\n\n');
+                }
+                return `Found ${count} document(s) but no content available for summarization.`;
+            }
+
+            // Handle CarePlan types
+            if (resourceId.startsWith('CarePlan-')) {
+                const carePlanText = JSON.stringify(data, null, 2);
+                const result = await azureOpenAI.summarizeDocument(carePlanText, {
+                    documentType: 'care plan',
+                    maxTokens: 500
+                });
+                if (result.success) {
+                    return result.summary;
+                }
+            }
+
+            // Handle Condition types
+            if (resourceId.startsWith('Condition-')) {
+                if (Array.isArray(data)) {
+                    const conditions = data.map(c => {
+                        const name = c.display || c.code?.text || 'Unknown';
+                        const status = c.clinicalStatus || c.status || '';
+                        return `- ${name}${status ? ` (${status})` : ''}`;
+                    });
+                    return `**${resourceLabel}:**\n${conditions.join('\n')}`;
+                }
+            }
+
+            // Handle Episode of Care
+            if (resourceId === 'EpisodeOfCare') {
+                if (Array.isArray(data) && data.length > 0) {
+                    const episode = data[0];
+                    return `**Episode:** ${episode.status || 'Active'}\n**Period:** ${episode.periodStart || 'N/A'} to ${episode.periodEnd || 'Ongoing'}`;
+                }
+            }
+
+            // Handle Encounters
+            if (resourceId === 'Encounter') {
+                if (Array.isArray(data) && data.length > 0) {
+                    const encounters = data.slice(0, 5).map(e => {
+                        return `- ${e.date || 'N/A'}: ${e.type || 'Visit'}`;
+                    });
+                    return `**Recent Encounters:**\n${encounters.join('\n')}`;
+                }
+            }
+
+            // Default: format as JSON summary
+            return `**${resourceLabel}:** ${count} record(s) found.`;
+
+        } catch (error) {
+            console.error(`[AI Summary] Error generating summary for ${resourceId}:`, error.message);
+            return `**${resourceLabel}:** ${count} record(s) found. (AI summary unavailable)`;
+        }
     }
 
     /**
@@ -691,7 +869,7 @@ app.post('/api/messages', async (req, res) => {
     console.log('Received request at /api/messages');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
     try {
-        await adapter.processActivity(req, res, async (context) => {
+        await adapter.process(req, res, async (context) => {
             await bot.run(context);
         });
     } catch (error) {

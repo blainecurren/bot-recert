@@ -14,6 +14,69 @@ const pythonBackend = require('./pythonBackendClient');
 const USE_PYTHON_BACKEND = process.env.USE_PYTHON_BACKEND !== 'false';
 
 /**
+ * Valid HCHB Visit Type Codes for filtering appointments
+ * Format: [Discipline][Visit#][Modifier]
+ * - Disciplines: RN, SN, LVN, PT, OT, ST, MS, HH, HS, PA, CH, BE, BSW, CT, VC
+ * - Modifiers: H=Hospice, N=Non-billable, WC=Wound Care, PRN=As-Needed
+ */
+const VALID_VISIT_TYPE_CODES = new Set([
+    // Bereavement/Behavioral
+    'BE72H', 'BE72HP', 'BSW11', 'BSW11H', 'BSW11N', 'BSW72H',
+    // Medical Social Worker
+    'MS01', 'MS01H', 'MS06', 'MS11', 'MS11H', 'MS11N', 'MS19', 'MS70H', 'MS72H', 'MSIH', 'MS-PRN', 'MSPRNH',
+    // Chaplain
+    'CH01H', 'CH11H', 'CH72H', 'CHPRNH',
+    // Certified Therapy (OTA/PTA)
+    'CT11', 'CT11H', 'CT11N', 'CT-PRN',
+    // Occupational Therapy
+    'OT00', 'OT00 (MOD)', 'OT01', 'OT01H', 'OT02', 'OT03', 'OT05', 'OT06', 'OT10', 'OT10N',
+    'OT11', 'OT11H', 'OT15', 'OT17', 'OT18', 'OT19', 'OT33', 'OT88', 'OT99', 'OT-PRN', 'OTACOURT', 'OTCOURTESY',
+    // Physical Therapy
+    'PT00', 'PT01', 'PT01H', 'PT02', 'PT03', 'PT05', 'PT06', 'PT10', 'PT10N',
+    'PT11', 'PT11H', 'PT11N', 'PT15', 'PT17', 'PT18', 'PT19', 'PT19H', 'PT33', 'PT88', 'PT99', 'PT-PRN', 'PTACOURT', 'PTCOURTESY',
+    // Physical Therapy Assistant
+    'PA11', 'PA11H', 'PA11N', 'PA-PRN',
+    // Registered Nurse
+    'RN00', 'RN00H', 'RN01', 'RN02', 'RN02H', 'RN03', 'RN05', 'RN06', 'RN10', 'RN10H', 'RN10-WC',
+    'RN11', 'RN11H', 'RN11H-HIAC', 'RN11WC', 'RN15', 'RN18', 'RN18H', 'RN19', 'RN26', 'RN70H', 'RN72H',
+    'RN88', 'RN88H', 'RN88HN', 'RN-PRN', 'RN-PRNH', 'RN-URPHA', 'RN10N-AIDE',  // Added aide supervisory
+    // Skilled Nursing
+    'SN11', 'SN11H', 'SN11H-HIAC', 'SN11N', 'SN11RS', 'SN11RSHOSP', 'SN11WC', 'SN70H', 'SN88H',
+    'SN-PRN', 'SN-PRNH', 'SNCOURTESY', 'SNIH',
+    'SN11P', 'SN93', 'SN-FREQREV', 'SN-RECREQ', 'INF-LOG-FU', 'SN-TELECOM',  // HCHB additional SN codes
+    // Licensed Vocational Nurse
+    'LVN11', 'LVN11WC', 'LVN-PRN', 'LVN11P',  // Added LVN11P for palliative
+    // Home Health Aide
+    'HH11', 'HH11N',
+    // Hospice Support/Aide
+    'HS11H', 'HS70H',
+    // Speech Therapy
+    'ST00', 'ST01', 'ST01H', 'ST02', 'ST03', 'ST05', 'ST06', 'ST10', 'ST10N',
+    'ST11', 'ST11H', 'ST11N', 'ST15', 'ST17', 'ST18', 'ST19', 'ST33', 'ST88', 'ST99', 'ST-PRN',
+    // Virtual Care
+    'VC01H', 'VC11H'
+]);
+
+/**
+ * Check if an appointment type code is valid
+ * @param {string} code - The appointment type code
+ * @returns {boolean} True if valid
+ */
+function isValidVisitTypeCode(code) {
+    if (!code) return false;
+    // Normalize code - trim and uppercase for comparison
+    const normalizedCode = code.trim().toUpperCase();
+    // Check exact match first
+    if (VALID_VISIT_TYPE_CODES.has(code)) return true;
+    if (VALID_VISIT_TYPE_CODES.has(normalizedCode)) return true;
+    // Check case-insensitive
+    for (const validCode of VALID_VISIT_TYPE_CODES) {
+        if (validCode.toUpperCase() === normalizedCode) return true;
+    }
+    return false;
+}
+
+/**
  * Helper function to try Python backend first
  * @param {string} resourceId - The resource ID for pythonBackendClient
  * @param {string} patientId - Patient ID (optional)
@@ -376,11 +439,18 @@ async function getDocuments(patientId) {
 
         return bundle.entry.map(entry => {
             const doc = entry.resource;
+            const attachment = doc.content?.[0]?.attachment || {};
             return {
                 id: doc.id,
                 type: doc.type?.text || doc.type?.coding?.[0]?.display,
-                date: doc.date,
-                author: doc.author?.[0]?.display
+                date: doc.date ? doc.date.split('T')[0] : null,
+                author: doc.author?.[0]?.display,
+                description: doc.description,
+                content: attachment.data || doc.description,
+                url: attachment.url || null,
+                contentType: attachment.contentType || null,
+                filename: attachment.title || null,
+                hasAttachment: !!attachment.url
             };
         });
     } catch (error) {
@@ -694,12 +764,18 @@ async function getDocumentsByType(patientId, typeCode) {
 
         return bundle.entry.map(entry => {
             const doc = entry.resource;
+            const attachment = doc.content?.[0]?.attachment || {};
             return {
                 id: doc.id,
                 type: doc.type?.text || doc.type?.coding?.[0]?.display,
-                date: doc.date,
+                date: doc.date ? doc.date.split('T')[0] : null,
                 author: doc.author?.[0]?.display,
-                content: doc.content?.[0]?.attachment?.data || doc.description
+                description: doc.description,
+                content: attachment.data || doc.description,
+                url: attachment.url || null,
+                contentType: attachment.contentType || null,
+                filename: attachment.title || null,
+                hasAttachment: !!attachment.url
             };
         });
     } catch (error) {
@@ -713,8 +789,15 @@ async function getCoordinationNotes(patientId) {
     const pythonData = await tryPythonBackend('DocumentReference-CoordinationNote', patientId);
     if (pythonData) return pythonData;
 
-    // Fallback to direct FHIR
-    return getDocumentsByType(patientId, 'coordination-note');
+    // Fallback: fetch all documents and filter for note types with content
+    // HCHB uses types like NARRATIVE, COMMUNICATION NOTE, etc. not "coordination-note"
+    const allDocs = await getDocuments(patientId);
+    const noteTypes = ['NARRATIVE', 'COMMUNICATION NOTE', 'COORDINATION NOTE', 'INTERNAL COMMUNICATION'];
+    return allDocs.filter(doc => {
+        const hasContent = doc.url || doc.content;
+        const isNoteType = !doc.type || noteTypes.some(t => doc.type?.toUpperCase().includes(t));
+        return hasContent && isNoteType;
+    }).slice(0, 10); // Limit to 10 for performance
 }
 
 async function getEpisodeDocuments(patientId) {
@@ -805,44 +888,67 @@ async function getWounds(patientId) {
 
 // ============ Appointment Functions ============
 
-async function getPatientVisits(patientId) {
+async function getPatientVisits(patientId, filterByValidCodes = true) {
     // Try Python backend first
     const pythonData = await tryPythonBackend('Appointment-Visit', patientId);
-    if (pythonData) return pythonData;
+    if (pythonData) {
+        // Filter Python data if needed
+        if (filterByValidCodes && Array.isArray(pythonData)) {
+            return pythonData.filter(apt => isValidVisitTypeCode(apt.typeCode || apt.code));
+        }
+        return pythonData;
+    }
 
     // Fallback to direct FHIR
     try {
         const bundle = await fhirGet('/Appointment', {
             patient: `Patient/${patientId}`,
-            _count: 20,
+            _count: 50,
             _sort: '-date'
         });
 
         if (!bundle.entry) return [];
 
-        return bundle.entry.map(entry => {
+        const appointments = bundle.entry.map(entry => {
             const apt = entry.resource;
+            const typeCode = apt.appointmentType?.coding?.[0]?.code || '';
+            const typeDisplay = apt.appointmentType?.coding?.[0]?.display || typeCode;
             return {
                 id: apt.id,
                 status: apt.status,
                 start: apt.start,
                 end: apt.end,
-                type: apt.appointmentType?.coding?.[0]?.display
+                typeCode: typeCode,
+                type: typeDisplay
             };
         });
+
+        // Filter to only valid visit type codes
+        if (filterByValidCodes) {
+            const filtered = appointments.filter(apt => isValidVisitTypeCode(apt.typeCode));
+            console.log(`[FHIR] Filtered appointments: ${filtered.length} of ${appointments.length} have valid visit type codes`);
+            return filtered;
+        }
+
+        return appointments;
     } catch (error) {
         console.error('[FHIR] Get patient visits failed:', error.message);
         return [];
     }
 }
 
-async function getSchedule(patientId) {
+async function getSchedule(patientId, filterByValidCodes = true) {
     // Try Python backend first
     const pythonData = await tryPythonBackend('Appointment-Schedule', patientId);
-    if (pythonData) return pythonData;
+    if (pythonData) {
+        if (filterByValidCodes && Array.isArray(pythonData)) {
+            return pythonData.filter(apt => isValidVisitTypeCode(apt.typeCode || apt.code));
+        }
+        return pythonData;
+    }
 
     // Fallback to direct FHIR
-    return getPatientVisits(patientId);
+    return getPatientVisits(patientId, filterByValidCodes);
 }
 
 async function getIDGMeetings(patientId) {
@@ -909,15 +1015,32 @@ async function getRelatedPersons(patientId) {
 
 // ============ Organization Functions ============
 
-async function getAgency() {
+async function getAgency(patientId) {
     // Try Python backend first
-    const pythonData = await tryPythonBackend('Organization-Agency', null);
+    const pythonData = await tryPythonBackend('Organization-Agency', patientId);
     if (pythonData) return pythonData;
 
-    // Fallback to direct FHIR
+    // Get agency from patient's managing organization
     try {
+        if (patientId) {
+            const patient = await fhirGet(`/Patient/${patientId}`);
+            if (patient.managingOrganization?.reference) {
+                const orgId = patient.managingOrganization.reference.replace('Organization/', '');
+                const org = await fhirGet(`/Organization/${orgId}`);
+                return {
+                    id: org.id,
+                    name: org.name,
+                    alias: org.alias?.[0],
+                    phone: org.telecom?.find(t => t.system === 'phone')?.value,
+                    address: formatAddress(org.address?.[0]),
+                    type: org.type?.[0]?.coding?.[0]?.code || 'Agency'
+                };
+            }
+        }
+
+        // Fallback: search for branch type organizations
         const bundle = await fhirGet('/Organization', {
-            type: 'prov', // Provider organization
+            type: 'branch',
             _count: 1
         });
 
@@ -927,6 +1050,9 @@ async function getAgency() {
         return {
             id: org.id,
             name: org.name,
+            alias: org.alias?.[0],
+            phone: org.telecom?.find(t => t.system === 'phone')?.value,
+            address: formatAddress(org.address?.[0]),
             type: 'Agency'
         };
     } catch (error) {
@@ -935,15 +1061,43 @@ async function getAgency() {
     }
 }
 
-async function getBranch() {
+// Helper to format address
+function formatAddress(addr) {
+    if (!addr) return null;
+    const parts = [];
+    if (addr.line) parts.push(addr.line.join(', '));
+    if (addr.city) parts.push(addr.city);
+    if (addr.state) parts.push(addr.state);
+    if (addr.postalCode) parts.push(addr.postalCode);
+    return parts.join(', ');
+}
+
+async function getBranch(patientId) {
     // Try Python backend first
-    const pythonData = await tryPythonBackend('Organization-Branch', null);
+    const pythonData = await tryPythonBackend('Organization-Branch', patientId);
     if (pythonData) return pythonData;
 
-    // Fallback to direct FHIR
+    // Get from patient's managing organization first
     try {
+        if (patientId) {
+            const patient = await fhirGet(`/Patient/${patientId}`);
+            if (patient.managingOrganization?.reference) {
+                const orgId = patient.managingOrganization.reference.replace('Organization/', '');
+                const org = await fhirGet(`/Organization/${orgId}`);
+                return [{
+                    id: org.id,
+                    name: org.name,
+                    alias: org.alias?.[0],
+                    phone: org.telecom?.find(t => t.system === 'phone')?.value,
+                    address: formatAddress(org.address?.[0]),
+                    type: 'Branch'
+                }];
+            }
+        }
+
+        // Fallback: search for branch type organizations
         const bundle = await fhirGet('/Organization', {
-            type: 'bus', // Business organization
+            type: 'branch',
             _count: 5
         });
 
@@ -954,6 +1108,9 @@ async function getBranch() {
             return {
                 id: org.id,
                 name: org.name,
+                alias: org.alias?.[0],
+                phone: org.telecom?.find(t => t.system === 'phone')?.value,
+                address: formatAddress(org.address?.[0]),
                 type: 'Branch'
             };
         });
@@ -1266,5 +1423,9 @@ module.exports = {
     getWorkerPatientsViaPython: pythonBackend.getWorkerPatients,
     batchFetchViaPython: pythonBackend.batchFetch,
     pythonBackendHealthCheck: pythonBackend.healthCheck,
-    USE_PYTHON_BACKEND
+    USE_PYTHON_BACKEND,
+
+    // Visit Type Code utilities
+    isValidVisitTypeCode,
+    VALID_VISIT_TYPE_CODES
 };

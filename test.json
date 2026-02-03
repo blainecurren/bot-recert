@@ -1,0 +1,1 @@
+{"type":"message","text":"hello","from":{"id":"user1"},"recipient":{"id":"bot"},"conversation":{"id":"conv1"},"serviceUrl":"http://localhost:58279"}
