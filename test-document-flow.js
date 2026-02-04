@@ -42,7 +42,7 @@ async function testDocumentFlow() {
     const backendHealth = await healthCheck();
     if (backendHealth.status !== 'healthy') {
         console.error('  ❌ Python backend not running');
-        console.error('  Start it with: cd mock-backend && python -m uvicorn main:app --port 8000');
+        console.error('  Ensure Python backend is running on port 8000');
         return;
     }
     console.log('  ✅ Python backend running\n');

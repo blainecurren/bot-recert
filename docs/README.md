@@ -8,12 +8,13 @@ A Microsoft Teams bot for home health nurses to access patient episode summaries
 # Install dependencies
 npm install
 
-# Start the Python backend (required for PDF extraction)
-cd mock-backend
+# Start the PDF extraction service (required for document summaries)
+cd pdf-service
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+uvicorn main:app --port 8000
 
 # Start the bot (in another terminal)
+cd ..
 npm start
 ```
 
@@ -38,7 +39,6 @@ The bot runs on `http://localhost:3978/api/messages`.
 | [SERVICES.md](./SERVICES.md) | All 8 services with function signatures |
 | [BOT-FLOW.md](./BOT-FLOW.md) | Conversation flow, action handlers, session state |
 | [CARDS.md](./CARDS.md) | Adaptive Cards reference (12 builders, 15 resource categories) |
-| [PYTHON-BACKEND.md](./PYTHON-BACKEND.md) | FastAPI endpoints, PDF extraction, Vision OCR |
 | [API-REFERENCE.md](./API-REFERENCE.md) | HCHB FHIR API, Azure OpenAI integration |
 | [ENVIRONMENT.md](./ENVIRONMENT.md) | Environment variables and configuration |
 | [DATA-FLOW.md](./DATA-FLOW.md) | Data flow diagrams for major workflows |
@@ -59,8 +59,9 @@ bot-recert/
 │   ├── azureOpenAIService.js   # AI summarization (343 lines)
 │   ├── summaryService.js       # Episode summaries (181 lines)
 │   └── pythonBackendClient.js  # Python backend client (208 lines)
-├── mock-backend/
-│   └── main.py                 # FastAPI backend (500+ lines)
+├── pdf-service/
+│   ├── main.py                 # FastAPI PDF extraction (230 lines)
+│   └── requirements.txt        # Python dependencies
 ├── docs/                       # Documentation
 └── package.json
 ```

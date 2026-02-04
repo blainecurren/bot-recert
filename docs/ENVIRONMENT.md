@@ -10,8 +10,8 @@ The application reads configuration from a `.env` file in the project root.
 bot-recert/
 ├── .env              ← Main configuration file
 ├── index.js
-└── mock-backend/
-    └── main.py       ← Reads ../.env
+└── services/
+    └── pythonBackendClient.js  ← Connects to Python backend
 ```
 
 ---

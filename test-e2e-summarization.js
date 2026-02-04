@@ -9,7 +9,7 @@
  * Run: node test-e2e-summarization.js [patientId]
  *
  * Prerequisites:
- * - Python backend running: cd mock-backend && python main.py
+ * - Python backend running on port 8000
  * - Valid HCHB credentials in .env
  * - Azure OpenAI credentials in .env
  */
@@ -44,10 +44,7 @@ async function runE2ETest() {
     const backendHealth = await healthCheck();
     if (backendHealth.status !== 'healthy') {
         console.error('  ❌ Python backend not available');
-        console.error('\n  To start the Python backend:');
-        console.error('    cd mock-backend');
-        console.error('    pip install fastapi uvicorn pdfplumber httpx PyMuPDF python-dotenv openai');
-        console.error('    python -m uvicorn main:app --reload --port 8000\n');
+        console.error('\n  Ensure Python backend is running on port 8000\n');
         return;
     }
     console.log('  ✅ Python backend running\n');
