@@ -1366,19 +1366,31 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
             "isSubtle": true
         });
 
-        // Add each result as an expandable section
-        const expandableActions = [];
+        // Group results by category for proper organization
+        const groupedResults = {};
+        const resourceToCategory = {};
 
+        // Build a map of resource ID to category
+        RESOURCE_CATEGORIES.forEach(category => {
+            category.resources.forEach(resource => {
+                resourceToCategory[resource.id] = category.name;
+            });
+        });
+
+        // Group the results by category
         resultKeys.forEach(resourceId => {
-            const result = fetchResults[resourceId];
-            const label = result.label || resourceId;
-            const needsAI = result.needsAISummary;
+            const categoryName = resourceToCategory[resourceId] || 'Other';
+            if (!groupedResults[categoryName]) {
+                groupedResults[categoryName] = [];
+            }
+            groupedResults[categoryName].push({ resourceId, result: fetchResults[resourceId] });
+        });
 
+        // Helper function to build content items for a result
+        function buildContentItems(result, needsAI) {
             let contentItems = [];
 
-            // Check if this has a summary or formatted content
             if (result.summary) {
-                // AI-generated summary
                 contentItems.push({
                     "type": "TextBlock",
                     "text": result.summary,
@@ -1386,7 +1398,6 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                     "color": "Dark"
                 });
             } else if (result.formatted) {
-                // Formatted data
                 contentItems.push({
                     "type": "TextBlock",
                     "text": result.formatted.formatted || result.formatted,
@@ -1394,7 +1405,6 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                     "color": "Dark"
                 });
             } else if (result.data) {
-                // Raw data - format it
                 if (Array.isArray(result.data) && result.data.length === 0) {
                     contentItems.push({
                         "type": "TextBlock",
@@ -1410,7 +1420,6 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                         "color": "Dark"
                     });
                 } else {
-                    // Try to format the data nicely
                     const dataStr = typeof result.data === 'string'
                         ? result.data
                         : JSON.stringify(result.data, null, 2).substring(0, 1000);
@@ -1432,7 +1441,6 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                 });
             }
 
-            // Add badge for AI summary
             if (needsAI && result.summary) {
                 contentItems.unshift({
                     "type": "TextBlock",
@@ -1443,25 +1451,52 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
                 });
             }
 
-            expandableActions.push({
-                "type": "Action.ShowCard",
-                "title": `${label}${needsAI ? ' *' : ''}`,
-                "card": {
-                    "type": "AdaptiveCard",
-                    "body": contentItems
-                }
-            });
-        });
-
-        // Add expandable sections (max 6 per ActionSet due to Teams limits)
-        for (let i = 0; i < expandableActions.length; i += 6) {
-            const chunk = expandableActions.slice(i, i + 6);
-            card.body.push({
-                "type": "ActionSet",
-                "spacing": "Small",
-                "actions": chunk
-            });
+            return contentItems;
         }
+
+        // Add results grouped by category (in RESOURCE_CATEGORIES order)
+        const categoryOrder = RESOURCE_CATEGORIES.map(c => c.name);
+        categoryOrder.push('Other'); // Add 'Other' at the end
+
+        categoryOrder.forEach(categoryName => {
+            const categoryResults = groupedResults[categoryName];
+            if (!categoryResults || categoryResults.length === 0) return;
+
+            // Add category header
+            card.body.push({
+                "type": "TextBlock",
+                "text": categoryName,
+                "weight": "Bolder",
+                "spacing": "Medium",
+                "separator": true
+            });
+
+            // Build expandable actions for this category
+            const expandableActions = categoryResults.map(({ resourceId, result }) => {
+                const label = result.label || resourceId;
+                const needsAI = result.needsAISummary;
+                const contentItems = buildContentItems(result, needsAI);
+
+                return {
+                    "type": "Action.ShowCard",
+                    "title": `${label}${needsAI ? ' *' : ''}`,
+                    "card": {
+                        "type": "AdaptiveCard",
+                        "body": contentItems
+                    }
+                };
+            });
+
+            // Add expandable sections (max 6 per ActionSet due to Teams limits)
+            for (let i = 0; i < expandableActions.length; i += 6) {
+                const chunk = expandableActions.slice(i, i + 6);
+                card.body.push({
+                    "type": "ActionSet",
+                    "spacing": "Small",
+                    "actions": chunk
+                });
+            }
+        });
 
         // Add errors if any
         if (errors.length > 0) {
@@ -1910,13 +1945,29 @@ function buildAISummaryCard(patient, summaryData, worker) {
             });
         }
 
-        // Add individual document summaries as expandable sections
+        // Add individual document summaries as expandable sections, grouped by document type
         if (summaryData.documents && summaryData.documents.length > 0) {
-            const expandableActions = [];
+            // Group documents by type
+            const groupedDocs = {};
+            summaryData.documents.forEach(doc => {
+                const docType = doc.documentType || 'Other';
+                if (!groupedDocs[docType]) {
+                    groupedDocs[docType] = [];
+                }
+                groupedDocs[docType].push(doc);
+            });
 
-            summaryData.documents.forEach((doc, index) => {
-                const docTitle = `${doc.documentType || 'Document'} (${doc.documentDate || 'N/A'})`;
+            // Add document summaries section header
+            card.body.push({
+                "type": "TextBlock",
+                "text": "Individual Document Summaries",
+                "weight": "Bolder",
+                "spacing": "Large",
+                "separator": true
+            });
 
+            // Helper to build content items for a document
+            function buildDocContentItems(doc) {
                 let contentItems = [];
 
                 if (doc.summary) {
@@ -1950,42 +2001,56 @@ function buildAISummaryCard(patient, summaryData, worker) {
                     });
                 }
 
-                expandableActions.push({
-                    "type": "Action.ShowCard",
-                    "title": docTitle,
-                    "card": {
-                        "type": "AdaptiveCard",
-                        "body": [
-                            {
-                                "type": "TextBlock",
-                                "text": doc.description || docTitle,
-                                "weight": "Bolder",
-                                "wrap": true
-                            },
-                            ...contentItems
-                        ]
-                    }
-                });
-            });
-
-            // Add document summaries section header
-            card.body.push({
-                "type": "TextBlock",
-                "text": "Individual Document Summaries",
-                "weight": "Bolder",
-                "spacing": "Large",
-                "separator": true
-            });
-
-            // Add expandable sections (max 6 per ActionSet due to Teams limits)
-            for (let i = 0; i < expandableActions.length; i += 6) {
-                const chunk = expandableActions.slice(i, i + 6);
-                card.body.push({
-                    "type": "ActionSet",
-                    "spacing": "Small",
-                    "actions": chunk
-                });
+                return contentItems;
             }
+
+            // Add each document type group with a header
+            Object.keys(groupedDocs).sort().forEach(docType => {
+                const docs = groupedDocs[docType];
+
+                // Add type header
+                card.body.push({
+                    "type": "TextBlock",
+                    "text": `${docType} (${docs.length})`,
+                    "weight": "Bolder",
+                    "size": "Small",
+                    "spacing": "Medium",
+                    "color": "Accent"
+                });
+
+                // Build expandable actions for this type
+                const expandableActions = docs.map(doc => {
+                    const docTitle = doc.documentDate || 'N/A';
+                    const contentItems = buildDocContentItems(doc);
+
+                    return {
+                        "type": "Action.ShowCard",
+                        "title": docTitle,
+                        "card": {
+                            "type": "AdaptiveCard",
+                            "body": [
+                                {
+                                    "type": "TextBlock",
+                                    "text": doc.description || `${docType} - ${docTitle}`,
+                                    "weight": "Bolder",
+                                    "wrap": true
+                                },
+                                ...contentItems
+                            ]
+                        }
+                    };
+                });
+
+                // Add expandable sections (max 6 per ActionSet due to Teams limits)
+                for (let i = 0; i < expandableActions.length; i += 6) {
+                    const chunk = expandableActions.slice(i, i + 6);
+                    card.body.push({
+                        "type": "ActionSet",
+                        "spacing": "Small",
+                        "actions": chunk
+                    });
+                }
+            });
         }
     }
 
