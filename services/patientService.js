@@ -311,8 +311,8 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     ? `${svcCode} - ${svcDisplay}`
                     : svcDisplay || svcCode || 'Visit';
 
-                // Debug: log patient name data
-                console.log(`[PatientService] Patient ${patient.id} name data:`, JSON.stringify(patient.name));
+                // Debug: log patient ID only (no PHI)
+                console.log(`[PatientService] Patient ${patient.id}: name fields present=${!!name.given?.[0]}, family=${!!name.family}, text=${!!name.text}`);
 
                 // Build name with fallbacks
                 const firstName = name.given?.[0] || '';
@@ -337,7 +337,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     visitType: visitType,
                     status: appointment.status
                 };
-                console.log(`[PatientService] Adding patient: ${patientData.lastName}, ${patientData.firstName}`);
+                console.log(`[PatientService] Adding patient: ${patientData.id}`);
                 scheduledPatients.push(patientData);
             }
         }

@@ -20,7 +20,7 @@ const client = axios.create({
 // Request interceptor for logging
 client.interceptors.request.use(
     request => {
-        console.log(`[PythonBackend] ${request.method.toUpperCase()} ${request.baseURL}${request.url}`);
+        console.log(`[PythonBackend] ${request.method.toUpperCase()} ${request.url}`);
         return request;
     },
     error => {
@@ -32,7 +32,7 @@ client.interceptors.request.use(
 // Response interceptor for error handling
 client.interceptors.response.use(
     response => {
-        console.log(`[PythonBackend] Response: ${response.status} - ${response.config.url}`);
+        console.log(`[PythonBackend] Response: ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`);
         return response;
     },
     error => {

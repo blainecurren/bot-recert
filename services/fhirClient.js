@@ -85,7 +85,7 @@ async function fhirGet(endpoint, params = {}) {
     const baseUrl = process.env.HCHB_API_BASE_URL;
 
     const url = `${baseUrl}${endpoint}`;
-    console.log(`[FHIR] GET ${url}`, params);
+    console.log(`[FHIR] GET ${endpoint}`, Object.keys(params));
 
     try {
         const response = await axios.get(url, {
@@ -99,7 +99,7 @@ async function fhirGet(endpoint, params = {}) {
         return response.data;
 
     } catch (error) {
-        console.error('[FHIR] GET request failed:', error.response?.status, error.response?.data || error.message);
+        console.error('[FHIR] GET request failed:', error.response?.status, error.message);
         
         // If unauthorized, clear token cache and retry once
         if (error.response?.status === 401) {
@@ -147,7 +147,7 @@ async function fhirPost(endpoint, data) {
         return response.data;
 
     } catch (error) {
-        console.error('[FHIR] POST request failed:', error.response?.data || error.message);
+        console.error('[FHIR] POST request failed:', error.response?.status, error.message);
         
         // If unauthorized, clear token cache and retry once
         if (error.response?.status === 401) {
