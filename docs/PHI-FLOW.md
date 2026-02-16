@@ -426,3 +426,58 @@ Despite the audit fixes, these PHI logging issues remain:
 8. **Encrypt workerContext at rest** or migrate to Bot Framework ConversationState with Azure Blob/CosmosDB (encrypted storage)
 9. **Add audit logging** for PHI access events (who viewed which patient's data, when)
 10. **Implement data minimization** — only fetch and display the PHI fields actually needed for each card, rather than full FHIR resources
+
+---
+
+## 8. Remediation Log — PHI Logging Fixes (2026-02-16)
+
+The following fixes were applied in commit `2b688a1` to address the critical and high-severity logging violations identified in sections 5 and 6 above.
+
+### 8.1 What Changed
+
+| # | File | Line | Severity | Before | After |
+|---|------|------|----------|--------|-------|
+| 1 | `patientService.js` | 315 | **CRITICAL** | `console.log(... JSON.stringify(patient.name))` — full FHIR name array dumped to logs | `console.log(... name fields present=${!!name.given?.[0]}, family=${!!name.family}, text=${!!name.text})` — boolean presence checks only |
+| 2 | `patientService.js` | 340 | **CRITICAL** | `console.log(... ${patientData.lastName}, ${patientData.firstName})` — plain-text patient name | `console.log(... ${patientData.id})` — FHIR resource ID only |
+| 3 | `fhirClient.js` | 88 | **HIGH** | `console.log([FHIR] GET ${url}, params)` — full absolute URL + all query param key-value pairs | `console.log([FHIR] GET ${endpoint}, Object.keys(params))` — relative path + param key names only (no values) |
+| 4 | `fhirClient.js` | 102 | **HIGH** | `console.error(... error.response?.data \|\| error.message)` — FHIR OperationOutcome body may reference patient data | `console.error(... error.message)` — generic error string only |
+| 5 | `fhirClient.js` | 150 | **HIGH** | `console.error(... error.response?.data \|\| error.message)` — same pattern on POST errors | `console.error(... error.response?.status, error.message)` — status code + generic error string only |
+| 6 | `pythonBackendClient.js` | 23 | **HIGH** | `console.log(... ${request.baseURL}${request.url})` — full absolute URL with patient IDs in paths | `console.log(... ${request.url})` — relative path only (base URL stripped) |
+| 7 | `pythonBackendClient.js` | 35 | **HIGH** | `console.log(... ${response.status} - ${response.config.url})` — full URL in response log | `console.log(... ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url})` — relative path only (method added for clarity) |
+
+### 8.2 Updated Risk Matrix
+
+| # | Risk | Severity | Mitigation Status |
+|---|------|----------|------------------|
+| 1 | ~~Patient names logged in plain text (`patientService.js`)~~ | ~~Critical~~ | **Fixed** — names replaced with boolean field checks and FHIR IDs |
+| 2 | ~~Full URLs with patient IDs logged for every FHIR/Python request~~ | ~~High~~ | **Fixed** — URLs reduced to relative paths, param values stripped |
+| 3 | Full clinical text sent to Azure OpenAI (including patient names) | **High** | Covered by Azure BAA — verify BAA is in place |
+| 4 | Document page images sent to Azure OpenAI Vision | **High** | Covered by Azure BAA — verify BAA is in place |
+| 5 | Episode JSON with all PHI sent to Azure OpenAI in one payload | **High** | Covered by Azure BAA — verify BAA is in place |
+| 6 | Python backend uses HTTP (no TLS) by default | **High** | OK if localhost only; risk if deployed separately |
+| 7 | Raw FHIR JSON displayed in cards (up to 1000 chars, unfiltered) | **Medium** | Controlled by user resource selection |
+| 8 | Patient names/IDs in Adaptive Card action data (round-trip through Teams) | **Medium** | Covered by Teams/Microsoft BAA |
+| 9 | workerContext holds up to 500 sessions of PHI in plaintext heap memory | **Medium** | 2-hour TTL eviction in place |
+| 10 | Error messages from FHIR/Azure may echo PHI | **Low** | **Partially fixed** — FHIR error bodies no longer logged; Azure/Python error details still may contain PHI |
+
+### 8.3 Remaining Logging Violations (Post-Fix)
+
+After the fixes above, these lower-severity items remain:
+
+**Moderate — Patient/Worker IDs in logs** (IDs are indirect identifiers, not names):
+
+| File | Line | Content |
+|------|------|---------|
+| `patientService.js` | 25, 38, 107, 197, 300, 325 | Worker ID or patient FHIR resource ID |
+| `index.js` | 322, 344, 488, 555, 630, 885 | Worker ID, worker name, patient IDs |
+| `documentService.js` | 19, 139, 218, 304, 323, 356, 410 | Patient IDs and document IDs |
+
+**Low — Error messages that may indirectly contain PHI:**
+
+| File | Line | Content |
+|------|------|---------|
+| `pythonBackendClient.js` | 40 | `error.response.data?.detail` from Python backend |
+| `documentService.js` | 158 | Error detail from text extraction |
+| `index.js` | 104, 371, 499, 719, 909, 957 | Error objects from upstream services |
+
+These are acceptable risks under a structured logging strategy — IDs alone do not constitute PHI without a lookup table, and error messages rarely contain clinical data. A future structured logging layer (Recommendation #6) would address these systematically.
