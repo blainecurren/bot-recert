@@ -345,10 +345,11 @@ class RecertBot extends ActivityHandler {
             const patients = await patientService.getPatientsByWorkerAndDate(workerId, selectedDate);
             console.log(`[Bot] Found ${patients.length} patients for ${selectedDate}`);
 
-            // Update context with patients
+            // Re-fetch context after async call to avoid overwriting concurrent changes
+            workerCtx = this._getContext(conversationId) || workerCtx;
             workerCtx.selectedDate = selectedDate;
             workerCtx.patients = patients;
-            workerCtx.documentSummaries = {}; // Initialize empty summaries
+            workerCtx.documentSummaries = {};
             this._setContext(conversationId, workerCtx);
 
             // Build and send the patient list card (single-select)
@@ -404,9 +405,12 @@ class RecertBot extends ActivityHandler {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             console.log(`[Bot] Document pre-load complete in ${elapsed}s`);
 
-            // Update the worker context with summaries
+            // Update the worker context with summaries (only if patient list hasn't changed)
             const workerCtx = this._getContext(conversationId);
-            if (workerCtx) {
+            const patientIds = new Set(patients.map(p => p.id));
+            const currentIds = new Set((workerCtx?.patients || []).map(p => p.id));
+            const listChanged = patientIds.size !== currentIds.size || [...patientIds].some(id => !currentIds.has(id));
+            if (workerCtx && !listChanged) {
                 workerCtx.documentSummaries = summaries;
                 this._setContext(conversationId, workerCtx);
 
@@ -422,6 +426,8 @@ class RecertBot extends ActivityHandler {
 
                 // Notify user that analysis is complete
                 await context.sendActivity(`AI analysis complete. Processed ${totalDocs} document(s) with ${successfulSummaries} summary(ies) ready. Select a patient to view their clinical summary.`);
+            } else if (listChanged) {
+                console.log('[Bot] Patient list changed during preload, discarding stale summaries');
             }
 
         } catch (error) {
@@ -601,9 +607,14 @@ class RecertBot extends ActivityHandler {
             // Find the patient in our context or create a minimal patient object
             let patient = workerCtx.patients?.find(p => p.id === patientId);
             if (!patient) {
+                const name = patientName || patientId;
+                const nameParts = name.includes(',') ? name.split(',').map(s => s.trim()) : [null, name];
                 patient = {
                     id: patientId,
-                    fullName: patientName || patientId
+                    fullName: name,
+                    lastName: nameParts[0] || name,
+                    firstName: nameParts[1] || '',
+                    name: name
                 };
             }
 
@@ -649,8 +660,13 @@ class RecertBot extends ActivityHandler {
                 return;
             }
 
-            const patientId = value.patientId || workerCtx.selectedPatient.id;
+            const patientId = value.patientId || workerCtx.selectedPatient?.id;
             const workerId = value.workerId || workerCtx.worker.id;
+
+            if (!patientId) {
+                await this.sendWelcomeCard(context);
+                return;
+            }
 
             // Extract selected resources from the form data
             const selectedResources = dataFetchService.extractSelectedResources(value);
@@ -688,9 +704,12 @@ class RecertBot extends ActivityHandler {
             workerCtx.selectedResources = selectedResources;
             this._setContext(conversationId, workerCtx);
 
-            // Build and send results card
+            // Use the patient matching the fetched patientId (not context which may be stale)
+            const displayPatient = workerCtx.patients?.find(p => p.id === patientId)
+                || workerCtx.selectedPatient
+                || { id: patientId, fullName: patientId };
             const resultsCard = cardBuilder.buildDataResultsCard(
-                workerCtx.selectedPatient,
+                displayPatient,
                 results,
                 errors
             );

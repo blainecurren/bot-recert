@@ -623,7 +623,9 @@ function buildRecertPatientListCard(worker, patients) {
             },
             {
                 "type": "TextBlock",
-                "text": `You have ${patients.length} patient(s) with upcoming recertifications. Select the patients you want summaries for:`,
+                "text": patients.length > 0
+                    ? `You have ${patients.length} patient(s) with upcoming recertifications. Select the patients you want summaries for:`
+                    : 'No upcoming recertifications found.',
                 "wrap": true,
                 "spacing": "Medium"
             }
@@ -632,18 +634,6 @@ function buildRecertPatientListCard(worker, patients) {
     };
 
     if (patients.length === 0) {
-        card.body.push({
-            "type": "Container",
-            "style": "good",
-            "spacing": "Medium",
-            "items": [
-                {
-                    "type": "TextBlock",
-                    "text": "No upcoming recertifications found.",
-                    "wrap": true
-                }
-            ]
-        });
         card.actions.push({
             "type": "Action.Submit",
             "title": "Refresh",
@@ -653,7 +643,7 @@ function buildRecertPatientListCard(worker, patients) {
         // Add each patient as a selectable toggle
         patients.forEach((patient, index) => {
             const daysUntilRecert = getDaysUntil(patient.recertDue);
-            const urgencyStyle = daysUntilRecert <= 7 ? "attention" : daysUntilRecert <= 14 ? "warning" : "default";
+            const urgencyStyle = daysUntilRecert <= 7 ? "attention" : daysUntilRecert <= 14 ? "accent" : "default";
 
             const patientContainer = {
                 "type": "Container",
@@ -914,7 +904,7 @@ function buildPatientListCard(searchTerm, patients) {
     if (patients.length === 0) {
         card.body.push({
             "type": "Container",
-            "style": "warning",
+            "style": "attention",
             "spacing": "Medium",
             "items": [
                 {
@@ -1349,7 +1339,7 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
     if (resultKeys.length === 0 && errors.length === 0) {
         card.body.push({
             "type": "Container",
-            "style": "warning",
+            "style": "attention",
             "spacing": "Medium",
             "items": [
                 {
@@ -1599,7 +1589,7 @@ function buildDocumentListCard(patient, documents, worker) {
     if (!documents || documents.length === 0) {
         card.body.push({
             "type": "Container",
-            "style": "warning",
+            "style": "attention",
             "spacing": "Medium",
             "items": [
                 {
@@ -1843,7 +1833,7 @@ function buildAISummaryCard(patient, summaryData, worker) {
     if (!summaryData || !summaryData.success) {
         card.body.push({
             "type": "Container",
-            "style": "warning",
+            "style": "attention",
             "spacing": "Medium",
             "items": [
                 {
