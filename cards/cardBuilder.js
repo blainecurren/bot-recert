@@ -1005,6 +1005,9 @@ function buildPatientListCard(searchTerm, patients) {
  * @returns {Object} Summary card JSON
  */
 function buildSummaryCard(summary) {
+    const snap = summary.patientSnapshot || {};
+    const episode = summary.episodeInfo || {};
+
     const card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
@@ -1016,14 +1019,14 @@ function buildSummaryCard(summary) {
                 "items": [
                     {
                         "type": "TextBlock",
-                        "text": summary.patientSnapshot.name,
+                        "text": snap.name || 'Unknown Patient',
                         "size": "Large",
                         "weight": "Bolder",
                         "color": "Accent"
                     },
                     {
                         "type": "TextBlock",
-                        "text": `Episode: ${summary.episodeInfo.startDate} - ${summary.episodeInfo.endDate}`,
+                        "text": `Episode: ${episode.startDate || 'N/A'} - ${episode.endDate || 'N/A'}`,
                         "size": "Small",
                         "isSubtle": true,
                         "spacing": "None"
@@ -1034,12 +1037,12 @@ function buildSummaryCard(summary) {
             {
                 "type": "FactSet",
                 "facts": [
-                    { "title": "DOB", "value": summary.patientSnapshot.dob },
-                    { "title": "Primary Dx", "value": summary.patientSnapshot.primaryDiagnosis },
-                    { "title": "Medications", "value": String(summary.patientSnapshot.medicationCount) },
-                    { "title": "Last Visit", "value": summary.episodeInfo.lastVisitDate },
-                    { "title": "Days in Episode", "value": String(summary.episodeInfo.daysInEpisode) },
-                    { "title": "Days Remaining", "value": String(summary.episodeInfo.daysRemaining) }
+                    { "title": "DOB", "value": snap.dob || 'N/A' },
+                    { "title": "Primary Dx", "value": snap.primaryDiagnosis || 'N/A' },
+                    { "title": "Medications", "value": String(snap.medicationCount ?? 'N/A') },
+                    { "title": "Last Visit", "value": episode.lastVisitDate || 'N/A' },
+                    { "title": "Days in Episode", "value": String(episode.daysInEpisode ?? 'N/A') },
+                    { "title": "Days Remaining", "value": String(episode.daysRemaining ?? 'N/A') }
                 ],
                 "spacing": "Medium"
             }
@@ -1053,7 +1056,7 @@ function buildSummaryCard(summary) {
             {
                 "type": "Action.OpenUrl",
                 "title": "Open in HCHB",
-                "url": `https://hchb.com/patient/${summary.patientSnapshot.id}`
+                "url": `https://hchb.com/patient/${snap.id || ''}`
             }
         ]
     };
@@ -1118,12 +1121,12 @@ function buildSummaryCard(summary) {
             "items": [
                 {
                     "type": "TextBlock",
-                    "text": `**${event.date}** - ${event.event}`,
+                    "text": `**${event.date || 'N/A'}** - ${event.event || 'Unknown event'}`,
                     "wrap": true
                 },
                 {
                     "type": "TextBlock",
-                    "text": event.details,
+                    "text": event.details || '',
                     "size": "Small",
                     "isSubtle": true,
                     "wrap": true,
@@ -1147,7 +1150,7 @@ function buildSummaryCard(summary) {
         const goalItems = summary.goals.map(goal => {
             const statusColor = goal.status === 'Met' ? 'Good'
                              : goal.status === 'Not Met' ? 'Attention'
-                             : 'Warning';
+                             : 'Accent';
 
             return {
                 "type": "Container",
@@ -1155,20 +1158,20 @@ function buildSummaryCard(summary) {
                 "items": [
                     {
                         "type": "TextBlock",
-                        "text": goal.goal,
+                        "text": goal.goal || 'Unnamed goal',
                         "weight": "Bolder",
                         "wrap": true
                     },
                     {
                         "type": "TextBlock",
-                        "text": `Status: ${goal.status}`,
+                        "text": `Status: ${goal.status || 'Unknown'}`,
                         "color": statusColor,
                         "size": "Small",
                         "spacing": "None"
                     },
                     {
                         "type": "TextBlock",
-                        "text": goal.notes,
+                        "text": goal.notes || '',
                         "size": "Small",
                         "isSubtle": true,
                         "wrap": true,
@@ -1178,9 +1181,10 @@ function buildSummaryCard(summary) {
             };
         });
 
+        const stats = summary.goalStats || {};
         goalItems.unshift({
             "type": "TextBlock",
-            "text": `Goals: ${summary.goalStats.met} Met | ${summary.goalStats.inProgress} In Progress | ${summary.goalStats.notMet} Not Met`,
+            "text": `Goals: ${stats.met ?? 0} Met | ${stats.inProgress ?? 0} In Progress | ${stats.notMet ?? 0} Not Met`,
             "size": "Small",
             "isSubtle": true
         });
@@ -1766,6 +1770,12 @@ function buildDocumentListCard(patient, documents, worker) {
  */
 function formatDisplayDate(dateStr) {
     if (!dateStr) return 'N/A';
+    // Parse YYYY-MM-DD as local time (new Date() parses date-only strings as UTC)
+    const parts = dateStr.split('T')[0].split('-');
+    if (parts.length === 3) {
+        const date = new Date(parts[0], parts[1] - 1, parts[2]);
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
@@ -1776,7 +1786,11 @@ function formatDisplayDate(dateStr) {
  * @returns {number} Days until date (negative if past)
  */
 function getDaysUntil(dateStr) {
-    const target = new Date(dateStr);
+    // Parse YYYY-MM-DD as local time to avoid off-by-one from UTC parsing
+    const parts = dateStr.split('T')[0].split('-');
+    const target = parts.length === 3
+        ? new Date(parts[0], parts[1] - 1, parts[2])
+        : new Date(dateStr);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     target.setHours(0, 0, 0, 0);

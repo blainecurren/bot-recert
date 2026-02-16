@@ -20,8 +20,8 @@ const patientService = require('./patientService');
  * @returns {number} Number of days
  */
 function daysBetween(startDate, endDate) {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    const start = parseLocalDate(startDate);
+    const end = parseLocalDate(endDate);
     const diffTime = Math.abs(end - start);
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
@@ -31,8 +31,17 @@ function daysBetween(startDate, endDate) {
  * @param {string} dateStr - Date string in YYYY-MM-DD format
  * @returns {string} Formatted date string
  */
+function parseLocalDate(dateStr) {
+    if (!dateStr) return new Date(NaN);
+    const parts = String(dateStr).split('T')[0].split('-');
+    if (parts.length === 3) return new Date(parts[0], parts[1] - 1, parts[2]);
+    return new Date(dateStr);
+}
+
 function formatDate(dateStr) {
-    const date = new Date(dateStr);
+    if (!dateStr) return 'N/A';
+    const date = parseLocalDate(dateStr);
+    if (isNaN(date)) return 'N/A';
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 

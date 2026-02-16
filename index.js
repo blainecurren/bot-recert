@@ -362,8 +362,10 @@ class RecertBot extends ActivityHandler {
                 return;
             }
 
-            // Pre-load document summaries in the background
-            await this.preloadDocumentSummaries(context, patients, conversationId);
+            // Pre-load document summaries in the background (fire-and-forget)
+            this.preloadDocumentSummaries(context, patients, conversationId).catch(err => {
+                console.error('[Bot] Background document preload failed:', err.message);
+            });
 
         } catch (error) {
             console.error('Error loading patients by date:', error);
@@ -747,7 +749,11 @@ class RecertBot extends ActivityHandler {
                         try {
                             // Decode base64 if needed
                             let textContent = doc.content;
-                            if (doc.content.match(/^[A-Za-z0-9+/=]+$/)) {
+                            const looksLikeBase64 = doc.content.length >= 100
+                                && doc.content.length % 4 === 0
+                                && /^[A-Za-z0-9+/]+={0,2}$/.test(doc.content)
+                                && /[0-9+/=]/.test(doc.content);
+                            if (looksLikeBase64) {
                                 try {
                                     textContent = Buffer.from(doc.content, 'base64').toString('utf-8');
                                     console.log(`[AI Summary] Decoded base64 content: ${textContent.length} chars`);

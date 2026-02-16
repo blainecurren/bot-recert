@@ -149,7 +149,7 @@ async function extractDocumentText(attachmentUrl) {
 
         console.log(`[DocumentService] Extracted ${response.data.char_count} characters from ${response.data.page_count} pages`);
 
-        return response.data;
+        return { success: true, ...response.data };
 
     } catch (error) {
         const status = error.response?.status;
