@@ -4,9 +4,10 @@ FastAPI server for extracting text from PDF documents via FHIR attachment URLs.
 Runs on port 8000.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 from datetime import datetime
 import httpx
 import pdfplumber
@@ -27,7 +28,7 @@ AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
 class ExtractTextRequest(BaseModel):
     url: str
-    token: str
+    token: Optional[str] = None  # Deprecated: use Authorization header instead
 
 
 app = FastAPI(
@@ -36,12 +37,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3978").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -144,7 +147,10 @@ def extract_text_with_vision(pdf_bytes: bytes, page_count: int) -> str:
 
 
 @app.post("/api/v1/documents/extract-text")
-async def extract_text_from_pdf(request: ExtractTextRequest):
+async def extract_text_from_pdf(
+    request: ExtractTextRequest,
+    authorization: Optional[str] = Header(None)
+):
     """
     Fetch PDF from URL and extract text content.
 
@@ -152,10 +158,22 @@ async def extract_text_from_pdf(request: ExtractTextRequest):
 
     Request body:
     - url: The attachment URL from DocumentReference
-    - token: Bearer token for authentication
+
+    Headers:
+    - Authorization: Bearer token for FHIR API authentication
 
     Returns extracted text, page count, and metadata.
     """
+    # Prefer Authorization header, fall back to body token for backwards compatibility
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+    elif request.token:
+        token = request.token
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required (via header or body)")
+
     MAX_SIZE_MB = 10
     MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
 
@@ -164,7 +182,7 @@ async def extract_text_from_pdf(request: ExtractTextRequest):
             response = await client.get(
                 request.url,
                 headers={
-                    "Authorization": f"Bearer {request.token}",
+                    "Authorization": f"Bearer {token}",
                     "Accept": "application/pdf"
                 }
             )

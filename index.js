@@ -1,5 +1,27 @@
 require('dotenv').config();
 
+// Validate required environment variables
+const REQUIRED_ENV = {
+    bot: ['MicrosoftAppId', 'MicrosoftAppPassword', 'MicrosoftAppType', 'MicrosoftAppTenantId'],
+    fhir: ['HCHB_TOKEN_URL', 'HCHB_CLIENT_ID', 'HCHB_AGENCY_SECRET', 'HCHB_RESOURCE_SECURITY_ID', 'HCHB_API_BASE_URL'],
+    ai: ['AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_DEPLOYMENT']
+};
+
+if (process.env.LOCAL_DEBUG !== 'true') {
+    const missing = {};
+    for (const [group, vars] of Object.entries(REQUIRED_ENV)) {
+        const groupMissing = vars.filter(v => !process.env[v]);
+        if (groupMissing.length > 0) missing[group] = groupMissing;
+    }
+    if (Object.keys(missing).length > 0) {
+        console.warn('\n=== MISSING ENVIRONMENT VARIABLES ===');
+        for (const [group, vars] of Object.entries(missing)) {
+            console.warn(`  [${group}]: ${vars.join(', ')}`);
+        }
+        console.warn('Some features may not work. Set these in your .env file.\n');
+    }
+}
+
 // Catch unhandled errors
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err);
@@ -52,12 +74,18 @@ adapter.onTurnError = async (context, error) => {
 };
 
 // Bot logic
+const CONTEXT_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const MAX_CONTEXTS = 500;
+
 class RecertBot extends ActivityHandler {
     constructor() {
         super();
 
-        // Store worker context for back navigation
+        // Store worker context for back navigation (with TTL eviction)
         this.workerContext = new Map();
+
+        // Periodically evict expired contexts (every 10 minutes)
+        this._evictionInterval = setInterval(() => this._evictExpiredContexts(), 10 * 60 * 1000);
 
         // Handle incoming messages
         this.onMessage(async (context, next) => {
@@ -70,8 +98,6 @@ class RecertBot extends ActivityHandler {
                     await this.handleCardAction(context, value);
                 } else {
                     // Regular text message - show welcome card
-                    const userMessage = context.activity.text;
-                    console.log(`Received text message: ${userMessage}`);
                     await this.sendWelcomeCard(context);
                 }
             } catch (error) {
@@ -94,6 +120,50 @@ class RecertBot extends ActivityHandler {
     }
 
     /**
+     * Get conversation context with TTL check
+     */
+    _getContext(conversationId) {
+        const entry = this.workerContext.get(conversationId);
+        if (!entry) return null;
+        if (Date.now() - entry._lastAccess > CONTEXT_TTL_MS) {
+            this.workerContext.delete(conversationId);
+            return null;
+        }
+        entry._lastAccess = Date.now();
+        return entry;
+    }
+
+    /**
+     * Set conversation context with TTL tracking
+     */
+    _setContext(conversationId, data) {
+        data._lastAccess = Date.now();
+        this.workerContext.set(conversationId, data);
+        // Enforce max size by removing oldest entry
+        if (this.workerContext.size > MAX_CONTEXTS) {
+            const oldestKey = this.workerContext.keys().next().value;
+            this.workerContext.delete(oldestKey);
+        }
+    }
+
+    /**
+     * Evict expired contexts
+     */
+    _evictExpiredContexts() {
+        const now = Date.now();
+        let evicted = 0;
+        for (const [key, entry] of this.workerContext) {
+            if (now - entry._lastAccess > CONTEXT_TTL_MS) {
+                this.workerContext.delete(key);
+                evicted++;
+            }
+        }
+        if (evicted > 0) {
+            console.log(`[Bot] Evicted ${evicted} expired conversation context(s). Active: ${this.workerContext.size}`);
+        }
+    }
+
+    /**
      * Send the welcome/login card
      */
     async sendWelcomeCard(context) {
@@ -106,7 +176,7 @@ class RecertBot extends ActivityHandler {
      * Handle Adaptive Card submit actions
      */
     async handleCardAction(context, value) {
-        console.log(`Handling card action: ${value.action}`, JSON.stringify(value, null, 2));
+        console.log(`[Bot] Card action: ${value.action}`);
 
         switch (value.action) {
             case 'validateWorker':
@@ -114,7 +184,6 @@ class RecertBot extends ActivityHandler {
                 break;
 
             case 'loadPatientsByDate':
-                console.log('loadPatientsByDate - Full value object:', JSON.stringify(value, null, 2));
                 await this.handleLoadPatientsByDate(context, value.workerId, value.selectedDate);
                 break;
 
@@ -179,7 +248,20 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Validating worker: ${workerId}`);
+        // Sanitize: allow alphanumeric, hyphens, underscores, max 50 chars
+        const sanitized = workerId.trim().substring(0, 50);
+        if (!/^[a-zA-Z0-9_-]+$/.test(sanitized)) {
+            const errorCard = cardBuilder.buildErrorCard(
+                'Invalid Worker ID',
+                'Worker ID must contain only letters, numbers, hyphens, or underscores.'
+            );
+            const card = CardFactory.adaptiveCard(errorCard);
+            await context.sendActivity({ attachments: [card] });
+            return;
+        }
+        workerId = sanitized;
+
+        console.log('[Bot] Validating worker');
 
         // Send processing message
         await context.sendActivity('Validating your Worker ID...');
@@ -191,7 +273,7 @@ class RecertBot extends ActivityHandler {
             if (!worker) {
                 const errorCard = cardBuilder.buildErrorCard(
                     'Worker Not Found',
-                    `No worker found with ID "${workerId}". Please check your Worker ID and try again.`
+                    'No worker found with that ID. Please check your Worker ID and try again.'
                 );
                 const card = CardFactory.adaptiveCard(errorCard);
                 await context.sendActivity({ attachments: [card] });
@@ -200,7 +282,7 @@ class RecertBot extends ActivityHandler {
 
             // Store worker in context
             const conversationId = context.activity.conversation.id;
-            this.workerContext.set(conversationId, {
+            this._setContext(conversationId, {
                 worker,
                 selectedDate: null,
                 patients: [],
@@ -244,7 +326,7 @@ class RecertBot extends ActivityHandler {
 
         try {
             const conversationId = context.activity.conversation.id;
-            let workerCtx = this.workerContext.get(conversationId);
+            let workerCtx = this._getContext(conversationId);
 
             // If no context, validate worker again
             if (!workerCtx || !workerCtx.worker) {
@@ -259,15 +341,15 @@ class RecertBot extends ActivityHandler {
             }
 
             // Get patients scheduled for this worker on this date
-            console.log(`Fetching patients from FHIR for worker ${workerId} on ${selectedDate}`);
+            console.log(`[Bot] Fetching patients for worker ${workerId} on ${selectedDate}`);
             const patients = await patientService.getPatientsByWorkerAndDate(workerId, selectedDate);
-            console.log(`Found ${patients.length} patients for ${workerCtx.worker.name} on ${selectedDate}`);
+            console.log(`[Bot] Found ${patients.length} patients for ${selectedDate}`);
 
             // Update context with patients
             workerCtx.selectedDate = selectedDate;
             workerCtx.patients = patients;
             workerCtx.documentSummaries = {}; // Initialize empty summaries
-            this.workerContext.set(conversationId, workerCtx);
+            this._setContext(conversationId, workerCtx);
 
             // Build and send the patient list card (single-select)
             const listCard = cardBuilder.buildPatientSelectionCard(workerCtx.worker, patients, selectedDate);
@@ -288,7 +370,7 @@ class RecertBot extends ActivityHandler {
             console.error('Error details:', error.stack);
             const errorCard = cardBuilder.buildErrorCard(
                 'Error Loading Patients',
-                `There was an error loading patients for this date: ${error.message || 'Unknown error'}. Please try again.`
+                'There was an error loading patients for this date. Please try again.'
             );
             const card = CardFactory.adaptiveCard(errorCard);
             await context.sendActivity({ attachments: [card] });
@@ -321,10 +403,10 @@ class RecertBot extends ActivityHandler {
             console.log(`[Bot] Document pre-load complete in ${elapsed}s`);
 
             // Update the worker context with summaries
-            const workerCtx = this.workerContext.get(conversationId);
+            const workerCtx = this._getContext(conversationId);
             if (workerCtx) {
                 workerCtx.documentSummaries = summaries;
-                this.workerContext.set(conversationId, workerCtx);
+                this._setContext(conversationId, workerCtx);
 
                 // Count successful summaries
                 let totalDocs = 0;
@@ -352,7 +434,7 @@ class RecertBot extends ActivityHandler {
      */
     async handleBackToDateSelection(context) {
         const conversationId = context.activity.conversation.id;
-        const workerCtx = this.workerContext.get(conversationId);
+        const workerCtx = this._getContext(conversationId);
 
         if (workerCtx && workerCtx.worker) {
             const dateCard = cardBuilder.buildDateSelectionCard(workerCtx.worker);
@@ -377,7 +459,7 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Loading patients for worker: ${workerId}`);
+        console.log('[Bot] Loading patients (legacy)');
 
         try {
             // Validate worker
@@ -386,7 +468,7 @@ class RecertBot extends ActivityHandler {
             if (!worker) {
                 const errorCard = cardBuilder.buildErrorCard(
                     'Worker Not Found',
-                    `No worker found with ID "${workerId}". Please check your Worker ID and try again.`
+                    'No worker found with that ID. Please check your Worker ID and try again.'
                 );
                 const card = CardFactory.adaptiveCard(errorCard);
                 await context.sendActivity({ attachments: [card] });
@@ -399,7 +481,7 @@ class RecertBot extends ActivityHandler {
 
             // Store worker context for back navigation
             const conversationId = context.activity.conversation.id;
-            this.workerContext.set(conversationId, { worker, patients });
+            this._setContext(conversationId, { worker, patients });
 
             // Build and send the patient selection card
             const listCard = cardBuilder.buildRecertPatientListCard(worker, patients);
@@ -443,7 +525,7 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Generating summaries for ${selectedPatientIds.length} patients:`, selectedPatientIds);
+        console.log(`[Bot] Generating summaries for ${selectedPatientIds.length} patients`);
 
         // Send processing card
         const processingCard = cardBuilder.buildProcessingCard(selectedPatientIds.length, value.workerId);
@@ -475,10 +557,16 @@ class RecertBot extends ActivityHandler {
      */
     async handleBackToPatients(context) {
         const conversationId = context.activity.conversation.id;
-        const workerCtx = this.workerContext.get(conversationId);
+        const workerCtx = this._getContext(conversationId);
 
-        if (workerCtx) {
-            const listCard = cardBuilder.buildRecertPatientListCard(workerCtx.worker, workerCtx.patients);
+        if (workerCtx && workerCtx.worker && workerCtx.selectedDate) {
+            // Modern flow: show date-based patient selection
+            const listCard = cardBuilder.buildPatientSelectionCard(workerCtx.worker, workerCtx.patients || [], workerCtx.selectedDate);
+            const card = CardFactory.adaptiveCard(listCard);
+            await context.sendActivity({ attachments: [card] });
+        } else if (workerCtx && workerCtx.worker) {
+            // Legacy flow fallback
+            const listCard = cardBuilder.buildRecertPatientListCard(workerCtx.worker, workerCtx.patients || []);
             const card = CardFactory.adaptiveCard(listCard);
             await context.sendActivity({ attachments: [card] });
         } else {
@@ -497,11 +585,11 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Patient selected: ${patientId}, skipSummary: ${skipSummary}`);
+        console.log(`[Bot] Patient selected, skipSummary: ${skipSummary}`);
 
         try {
             const conversationId = context.activity.conversation.id;
-            const workerCtx = this.workerContext.get(conversationId);
+            const workerCtx = this._getContext(conversationId);
 
             if (!workerCtx || !workerCtx.worker) {
                 await this.sendWelcomeCard(context);
@@ -519,7 +607,7 @@ class RecertBot extends ActivityHandler {
 
             // Store selected patient in context
             workerCtx.selectedPatient = patient;
-            this.workerContext.set(conversationId, workerCtx);
+            this._setContext(conversationId, workerCtx);
 
             // Check if we have pre-loaded AI summaries and should show them
             const patientSummary = workerCtx.documentSummaries?.[patientId];
@@ -552,7 +640,7 @@ class RecertBot extends ActivityHandler {
 
         try {
             const conversationId = context.activity.conversation.id;
-            const workerCtx = this.workerContext.get(conversationId);
+            const workerCtx = this._getContext(conversationId);
 
             if (!workerCtx || !workerCtx.worker || !workerCtx.selectedPatient) {
                 await this.sendWelcomeCard(context);
@@ -596,16 +684,9 @@ class RecertBot extends ActivityHandler {
 
             // Store selected resources in context for back navigation
             workerCtx.selectedResources = selectedResources;
-            this.workerContext.set(conversationId, workerCtx);
+            this._setContext(conversationId, workerCtx);
 
             // Build and send results card
-            console.log('[DEBUG] Results before card build:');
-            for (const [key, val] of Object.entries(results)) {
-                console.log(`  ${key}: hasData=${!!val.data}, hasSummary=${!!val.summary}, summaryLength=${val.summary?.length || 0}`);
-                if (val.summary) {
-                    console.log(`  Summary preview: ${val.summary.substring(0, 100)}...`);
-                }
-            }
             const resultsCard = cardBuilder.buildDataResultsCard(
                 workerCtx.selectedPatient,
                 results,
@@ -613,7 +694,6 @@ class RecertBot extends ActivityHandler {
             );
             const card = CardFactory.adaptiveCard(resultsCard);
             await context.sendActivity({ attachments: [card] });
-            console.log('[DEBUG] Results card sent to Teams');
 
         } catch (error) {
             console.error('Error fetching resources:', error);
@@ -766,11 +846,11 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Viewing documents for patient: ${patientId}`);
+        console.log('[Bot] Viewing documents for patient');
 
         try {
             const conversationId = context.activity.conversation.id;
-            const workerCtx = this.workerContext.get(conversationId);
+            const workerCtx = this._getContext(conversationId);
 
             // Send processing message
             await context.sendActivity('Fetching patient documents...');
@@ -804,7 +884,7 @@ class RecertBot extends ActivityHandler {
             console.error('Error fetching documents:', error);
             const errorCard = cardBuilder.buildErrorCard(
                 'Error Fetching Documents',
-                `There was an error fetching documents: ${error.message || 'Unknown error'}. Please try again.`
+                'There was an error fetching documents. Please try again.'
             );
             const card = CardFactory.adaptiveCard(errorCard);
             await context.sendActivity({ attachments: [card] });
@@ -816,7 +896,7 @@ class RecertBot extends ActivityHandler {
      */
     async handleBackToResourceSelection(context) {
         const conversationId = context.activity.conversation.id;
-        const workerCtx = this.workerContext.get(conversationId);
+        const workerCtx = this._getContext(conversationId);
 
         if (workerCtx && workerCtx.worker && workerCtx.selectedPatient) {
             const resourceCard = cardBuilder.buildResourceSelectionCard(
@@ -840,7 +920,7 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Searching for patients: "${searchTerm}"`);
+        console.log('[Bot] Searching for patients');
 
         try {
             const patients = await patientService.searchPatients(searchTerm);
@@ -866,8 +946,7 @@ app.get('/', (req, res) => {
 
 // Listen for incoming requests
 app.post('/api/messages', async (req, res) => {
-    console.log('Received request at /api/messages');
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('[Bot] Incoming activity:', req.body?.type || 'unknown');
     try {
         await adapter.process(req, res, async (context) => {
             await bot.run(context);
@@ -884,22 +963,20 @@ app.post('/api/messages', async (req, res) => {
 const port = process.env.PORT || 3978;
 const server = app.listen(port, '0.0.0.0', () => {
     console.log(`\nBot is running on http://localhost:${port}/api/messages`);
-    console.log(`App ID: ${process.env.MicrosoftAppId}`);
-    console.log(`Tenant: ${process.env.MicrosoftAppTenantId}`);
-    console.log(`App Type: ${process.env.MicrosoftAppType}`);
-    console.log(`\nPress Ctrl+C to stop.\n`);
+    console.log(`Mode: ${LOCAL_DEBUG ? 'LOCAL DEBUG' : 'Production'}`);
+    console.log(`Press Ctrl+C to stop.\n`);
 });
 
 server.on('error', (err) => {
     console.error('Server error:', err);
 });
 
-// Keep the process alive
-setInterval(() => {}, 1000);
-
-// Keep process alive
+// Graceful shutdown
 process.on('SIGINT', () => {
     console.log('Shutting down...');
-    server.close();
-    process.exit(0);
+    clearInterval(bot._evictionInterval);
+    server.close(() => {
+        console.log('Server closed.');
+        process.exit(0);
+    });
 });

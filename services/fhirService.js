@@ -138,27 +138,11 @@ async function getPatientById(patientId) {
 }
 
 /**
- * Get worker/practitioner by ID
+ * Get worker/practitioner by ID (simple FHIR lookup)
+ * Note: For full validation with Python backend fallbacks, use patientService.getWorkerById
  */
 async function getWorkerById(workerId) {
-    // Try Python backend first
-    if (USE_PYTHON_BACKEND) {
-        try {
-            console.log('[PythonBackend] Validating worker:', workerId);
-            const result = await pythonBackend.validateWorker(workerId);
-            if (result.valid && result.worker) {
-                return result.worker;
-            }
-            console.log('[PythonBackend] Worker not found, trying direct FHIR');
-        } catch (error) {
-            console.log('[PythonBackend] Unavailable, falling back to direct FHIR:', error.message);
-        }
-    }
-
-    // Fallback to direct FHIR
     try {
-        console.log('[FHIR] Looking up worker:', workerId);
-
         const bundle = await fhirGet('/Practitioner', {
             identifier: workerId,
             _count: 1
@@ -176,9 +160,7 @@ async function getWorkerById(workerId) {
             };
         }
 
-        console.log('[FHIR] Worker not found');
         return null;
-
     } catch (error) {
         console.error('[FHIR] Get worker failed:', error.message);
         return null;

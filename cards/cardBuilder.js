@@ -205,7 +205,6 @@ function buildPatientSelectionCard(worker, patients, selectedDate) {
         ];
     }
 
-    console.log('[CardBuilder] Final card body item 2:', JSON.stringify(card.body[2], null, 2));
     return card;
 }
 

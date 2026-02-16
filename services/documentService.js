@@ -142,8 +142,9 @@ async function extractDocumentText(attachmentUrl) {
         const token = await getAccessToken();
 
         const response = await pythonBackend.post('/documents/extract-text', {
-            url: attachmentUrl,
-            token: token
+            url: attachmentUrl
+        }, {
+            headers: { 'Authorization': `Bearer ${token}` }
         });
 
         console.log(`[DocumentService] Extracted ${response.data.char_count} characters from ${response.data.page_count} pages`);
