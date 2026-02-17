@@ -4,6 +4,9 @@
  */
 
 const axios = require('axios');
+const { createLogger } = require('./logger');
+
+const log = createLogger('PythonBackend');
 
 const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000/api/v1';
 const PYTHON_BACKEND_TIMEOUT = parseInt(process.env.PYTHON_BACKEND_TIMEOUT) || 30000;
@@ -20,11 +23,11 @@ const client = axios.create({
 // Request interceptor for logging
 client.interceptors.request.use(
     request => {
-        console.log(`[PythonBackend] ${request.method.toUpperCase()} ${request.url}`);
+        log.debug({ method: request.method.toUpperCase(), url: request.url }, 'Request');
         return request;
     },
     error => {
-        console.error('[PythonBackend] Request error:', error.message);
+        log.error({ err: error }, 'Request error');
         return Promise.reject(error);
     }
 );
@@ -32,16 +35,16 @@ client.interceptors.request.use(
 // Response interceptor for error handling
 client.interceptors.response.use(
     response => {
-        console.log(`[PythonBackend] Response: ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`);
+        log.debug({ status: response.status, method: response.config.method?.toUpperCase(), url: response.config.url }, 'Response');
         return response;
     },
     error => {
         if (error.response) {
-            console.error(`[PythonBackend] Error ${error.response.status}:`, error.response.data?.detail || error.message);
+            log.error({ status: error.response.status, detail: error.response.data?.detail }, 'Response error');
         } else if (error.request) {
-            console.error('[PythonBackend] No response received:', error.message);
+            log.error({ err: error }, 'No response received');
         } else {
-            console.error('[PythonBackend] Error:', error.message);
+            log.error({ err: error }, 'Request setup error');
         }
         return Promise.reject(error);
     }
@@ -179,7 +182,7 @@ async function getWorkerPatients(workerId, date) {
         });
         return response.data;
     } catch (error) {
-        console.error('[PythonBackend] Get worker patients failed:', error.message);
+        log.error({ err: error, workerId }, 'Get worker patients failed');
         return { data: [], count: 0 };
     }
 }
@@ -192,7 +195,7 @@ async function batchFetch(patientId, resourceIds) {
         const response = await client.post(`/patients/${patientId}/batch`, resourceIds);
         return response.data;
     } catch (error) {
-        console.error('[PythonBackend] Batch fetch failed:', error.message);
+        log.error({ err: error, patientId, resourceCount: resourceIds.length }, 'Batch fetch failed');
         return { results: {}, errors: resourceIds.map(r => ({ resource: r, error: error.message })) };
     }
 }

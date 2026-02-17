@@ -4,6 +4,9 @@
  */
 
 const axios = require('axios');
+const { createLogger } = require('./logger');
+
+const log = createLogger('FHIR');
 
 // Token cache
 let tokenCache = {
@@ -21,12 +24,12 @@ async function getAccessToken() {
     if (tokenCache.accessToken && tokenCache.expiresAt) {
         const bufferMs = 5 * 60 * 1000; // 5 minutes
         if (Date.now() < tokenCache.expiresAt - bufferMs) {
-            console.log('[FHIR] Using cached token');
+            log.debug('Using cached token');
             return tokenCache.accessToken;
         }
     }
 
-    console.log('[FHIR] Requesting new access token...');
+    log.info('Requesting new access token');
 
     const tokenUrl = process.env.HCHB_TOKEN_URL;
     const clientId = process.env.HCHB_CLIENT_ID;
@@ -46,7 +49,7 @@ async function getAccessToken() {
         params.append('resource_security_id', resourceSecurityId);
         params.append('agency_secret', agencySecret);
 
-        console.log('[FHIR] Token request to:', tokenUrl);
+        log.debug({ tokenUrl }, 'Token request');
 
         const response = await axios.post(tokenUrl, params, {
             headers: {
@@ -57,7 +60,7 @@ async function getAccessToken() {
         const { access_token, expires_in } = response.data;
 
         if (!access_token) {
-            console.error('[FHIR] Token response:', response.data);
+            log.error('No access_token in token response');
             throw new Error('No access_token in response');
         }
 
@@ -65,11 +68,11 @@ async function getAccessToken() {
         tokenCache.accessToken = access_token;
         tokenCache.expiresAt = Date.now() + (expires_in * 1000);
 
-        console.log('[FHIR] Access token obtained successfully, expires in', expires_in, 'seconds');
+        log.info({ expiresIn: expires_in }, 'Access token obtained');
         return access_token;
 
     } catch (error) {
-        console.error('[FHIR] Token request failed:', error.response?.data || error.message);
+        log.error({ err: error }, 'Token request failed');
         throw new Error(`Failed to obtain FHIR access token: ${error.response?.data?.error_description || error.message}`);
     }
 }
@@ -85,7 +88,7 @@ async function fhirGet(endpoint, params = {}) {
     const baseUrl = process.env.HCHB_API_BASE_URL;
 
     const url = `${baseUrl}${endpoint}`;
-    console.log(`[FHIR] GET ${endpoint}`, Object.keys(params));
+    log.info({ endpoint, paramKeys: Object.keys(params) }, 'GET request');
 
     try {
         const response = await axios.get(url, {
@@ -99,14 +102,14 @@ async function fhirGet(endpoint, params = {}) {
         return response.data;
 
     } catch (error) {
-        console.error('[FHIR] GET request failed:', error.response?.status, error.message);
-        
+        log.error({ err: error, endpoint, status: error.response?.status }, 'GET request failed');
+
         // If unauthorized, clear token cache and retry once
         if (error.response?.status === 401) {
-            console.log('[FHIR] Token expired, clearing cache and retrying...');
+            log.info('Token expired, clearing cache and retrying');
             tokenCache.accessToken = null;
             tokenCache.expiresAt = null;
-            
+
             const newToken = await getAccessToken();
             const retryResponse = await axios.get(url, {
                 params,
@@ -133,7 +136,7 @@ async function fhirPost(endpoint, data) {
     const baseUrl = process.env.HCHB_API_BASE_URL;
 
     const url = `${baseUrl}${endpoint}`;
-    console.log(`[FHIR] POST ${url}`);
+    log.info({ endpoint }, 'POST request');
 
     try {
         const response = await axios.post(url, data, {
@@ -147,14 +150,14 @@ async function fhirPost(endpoint, data) {
         return response.data;
 
     } catch (error) {
-        console.error('[FHIR] POST request failed:', error.response?.status, error.message);
-        
+        log.error({ err: error, endpoint, status: error.response?.status }, 'POST request failed');
+
         // If unauthorized, clear token cache and retry once
         if (error.response?.status === 401) {
-            console.log('[FHIR] Token expired, clearing cache and retrying...');
+            log.info('Token expired, clearing cache and retrying');
             tokenCache.accessToken = null;
             tokenCache.expiresAt = null;
-            
+
             const newToken = await getAccessToken();
             const retryResponse = await axios.post(url, data, {
                 headers: {
@@ -176,7 +179,7 @@ async function fhirPost(endpoint, data) {
 function clearTokenCache() {
     tokenCache.accessToken = null;
     tokenCache.expiresAt = null;
-    console.log('[FHIR] Token cache cleared');
+    log.info('Token cache cleared');
 }
 
 /**
@@ -185,25 +188,25 @@ function clearTokenCache() {
  */
 async function testConnection() {
     try {
-        console.log('[FHIR] Testing connection...');
+        log.info('Testing connection');
         await getAccessToken();
-        
+
         // Try a simple metadata request
         const baseUrl = process.env.HCHB_API_BASE_URL;
         const token = tokenCache.accessToken;
-        
+
         const response = await axios.get(`${baseUrl}/metadata`, {
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Accept': 'application/fhir+json'
             }
         });
-        
-        console.log('[FHIR] Connection successful! FHIR version:', response.data.fhirVersion);
+
+        log.info({ fhirVersion: response.data.fhirVersion }, 'Connection successful');
         return true;
-        
+
     } catch (error) {
-        console.error('[FHIR] Connection test failed:', error.response?.data || error.message);
+        log.error({ err: error }, 'Connection test failed');
         return false;
     }
 }
@@ -215,18 +218,18 @@ function getTokenStatus() {
     if (!tokenCache.accessToken) {
         return { status: 'none', message: 'No token cached' };
     }
-    
+
     const now = Date.now();
     const expiresIn = Math.round((tokenCache.expiresAt - now) / 1000);
-    
+
     if (expiresIn <= 0) {
         return { status: 'expired', message: 'Token expired' };
     }
-    
-    return { 
-        status: 'valid', 
+
+    return {
+        status: 'valid',
         message: `Token valid for ${expiresIn} seconds`,
-        expiresIn 
+        expiresIn
     };
 }
 

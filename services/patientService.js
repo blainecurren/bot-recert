@@ -7,11 +7,14 @@
 const fhirService = require('./fhirService');
 const { fhirGet } = require('./fhirClient');
 const pythonBackend = require('./pythonBackendClient');
+const { createLogger } = require('./logger');
+
+const log = createLogger('PatientService');
 
 // Use Python backend by default
 const USE_PYTHON_BACKEND = process.env.USE_PYTHON_BACKEND !== 'false';
 
-console.log(`[PatientService] Using ${USE_PYTHON_BACKEND ? 'PYTHON BACKEND' : 'DIRECT FHIR API'}`);
+log.info({ usePythonBackend: USE_PYTHON_BACKEND }, 'Backend mode');
 
 /**
  * Get worker by ID
@@ -22,20 +25,20 @@ async function getWorkerById(workerId) {
     // Try Python backend first
     if (USE_PYTHON_BACKEND) {
         try {
-            console.log('[PatientService] Validating worker via Python backend:', workerId);
+            log.debug({ workerId }, 'Validating worker via Python backend');
             const result = await pythonBackend.validateWorker(workerId);
             if (result.valid && result.worker) {
                 return result.worker;
             }
-            console.log('[PatientService] Worker not found in Python backend, trying FHIR');
+            log.debug('Worker not found in Python backend, trying FHIR');
         } catch (error) {
-            console.log('[PatientService] Python backend unavailable:', error.message);
+            log.debug({ err: error }, 'Python backend unavailable');
         }
     }
 
     // Fallback to direct FHIR
     try {
-        console.log('[PatientService] Looking up worker:', workerId);
+        log.debug({ workerId }, 'Looking up worker');
 
         // Try 1: Search by identifier
         let bundle = await fhirGet('/Practitioner', {
@@ -45,7 +48,7 @@ async function getWorkerById(workerId) {
 
         // Try 2: Search by _id (resource ID)
         if (!bundle.entry || bundle.entry.length === 0) {
-            console.log('[PatientService] Not found by identifier, trying _id...');
+            log.debug('Not found by identifier, trying _id');
             bundle = await fhirGet('/Practitioner', {
                 _id: workerId,
                 _count: 1
@@ -54,7 +57,7 @@ async function getWorkerById(workerId) {
 
         // Try 3: Direct fetch by resource ID
         if (!bundle.entry || bundle.entry.length === 0) {
-            console.log('[PatientService] Not found by _id, trying direct fetch...');
+            log.debug('Not found by _id, trying direct fetch');
             try {
                 const practitioner = await fhirGet(`/Practitioner/${workerId}`);
                 if (practitioner && practitioner.id) {
@@ -73,7 +76,7 @@ async function getWorkerById(workerId) {
 
         // Try 4: Search by name (if workerId looks like a name)
         if (!bundle.entry || bundle.entry.length === 0) {
-            console.log('[PatientService] Not found by ID, trying name search...');
+            log.debug('Not found by ID, trying name search');
             bundle = await fhirGet('/Practitioner', {
                 name: workerId,
                 _count: 1
@@ -91,10 +94,10 @@ async function getWorkerById(workerId) {
             };
         }
 
-        console.log('[PatientService] Worker not found');
+        log.debug('Worker not found');
         return null;
     } catch (error) {
-        console.error('[PatientService] Worker lookup failed:', error.message);
+        log.error({ err: error }, 'Worker lookup failed');
         return null;
     }
 }
@@ -104,7 +107,7 @@ async function getWorkerById(workerId) {
  */
 async function getRecertPatientsByWorker(workerId, daysAhead = 30) {
     try {
-        console.log('[PatientService] Getting recert patients for worker:', workerId);
+        log.info({ workerId }, 'Getting recert patients');
 
         const today = new Date();
 
@@ -116,7 +119,7 @@ async function getRecertPatientsByWorker(workerId, daysAhead = 30) {
         });
 
         if (!bundle.entry || bundle.entry.length === 0) {
-            console.log('[PatientService] No active episodes found');
+            log.debug('No active episodes found');
             return [];
         }
 
@@ -178,11 +181,11 @@ async function getRecertPatientsByWorker(workerId, daysAhead = 30) {
 
         // Sort by recert due date
         recertPatients.sort((a, b) => a.daysUntilRecert - b.daysUntilRecert);
-        console.log(`[PatientService] Found ${recertPatients.length} recert patients`);
+        log.info({ count: recertPatients.length }, 'Recert patients found');
         return recertPatients;
 
     } catch (error) {
-        console.error('[PatientService] Get recert patients failed:', error.message);
+        log.error({ err: error }, 'Get recert patients failed');
         return [];
     }
 }
@@ -194,7 +197,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
     // Try Python backend first
     if (USE_PYTHON_BACKEND) {
         try {
-            console.log(`[PatientService] Getting patients via Python backend for worker ${workerId} on ${dateStr}`);
+            log.debug({ workerId, dateStr }, 'Getting patients via Python backend');
             const result = await pythonBackend.getWorkerPatients(workerId, dateStr);
             if (result.data && result.data.length > 0) {
                 // Filter by valid visit type codes
@@ -203,25 +206,25 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     const visitTypeCode = patient.visitTypeCode || patient.visitType?.split(' ')?.[0] || '';
                     const isValid = fhirService.isValidVisitTypeCode(visitTypeCode);
                     if (!isValid) {
-                        console.log(`[PatientService] Filtering out patient with visit type: ${patient.visitType}`);
+                        log.debug({ visitType: patient.visitType }, 'Filtering out patient with invalid visit type');
                     }
                     return isValid;
                 });
-                console.log(`[PatientService] Filtered ${totalCount - filtered.length} of ${totalCount} patients by visit type`);
+                log.info({ filtered: totalCount - filtered.length, total: totalCount }, 'Filtered patients by visit type');
                 return filtered;
             }
-            console.log('[PatientService] No patients from Python backend, trying FHIR');
+            log.debug('No patients from Python backend, trying FHIR');
         } catch (error) {
-            console.log('[PatientService] Python backend unavailable:', error.message);
+            log.debug({ err: error }, 'Python backend unavailable');
         }
     }
 
     // Fallback to direct FHIR
     try {
-        console.log(`[PatientService] Getting patients for worker ${workerId} on ${dateStr}`);
+        log.debug({ workerId, dateStr }, 'Getting patients via FHIR');
 
         // Use 'actor' parameter which works with HCHB API
-        console.log(`[PatientService] Querying appointments with actor=Practitioner/${workerId}, date=${dateStr}`);
+        log.debug({ workerId, dateStr }, 'Querying appointments');
         let bundle = null;
         try {
             bundle = await fhirGet('/Appointment', {
@@ -230,16 +233,16 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                 _count: 100
             });
         } catch (e) {
-            console.log(`[PatientService] Appointment query failed: ${e.message}`);
+            log.debug({ err: e }, 'Appointment query failed');
         }
 
         if (!bundle || !bundle.entry || bundle.entry.length === 0) {
-            console.log('[PatientService] No appointments found for this date');
+            log.debug('No appointments found for this date');
             return [];
         }
 
         const totalAppointments = bundle.entry.length;
-        console.log(`[PatientService] Found ${totalAppointments} total appointments`);
+        log.debug({ totalAppointments }, 'Appointments found');
 
         const scheduledPatients = [];
         const seenPatientIds = new Set();
@@ -253,11 +256,11 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             const serviceTypeDisplay = appointment.serviceType?.[0]?.coding?.[0]?.display || '';
             const appointmentTypeCode = appointment.appointmentType?.coding?.[0]?.code || '';
 
-            console.log(`[PatientService] Appointment ${appointment.id}: serviceType="${serviceTypeCode}" (${serviceTypeDisplay}), appointmentType="${appointmentTypeCode}"`);
+            log.debug({ appointmentId: appointment.id, serviceTypeCode, serviceTypeDisplay, appointmentTypeCode }, 'Processing appointment');
 
             // Filter by serviceType code (discipline-specific codes like SN11, RN10, LVN11WC)
             if (!fhirService.isValidVisitTypeCode(serviceTypeCode)) {
-                console.log(`[PatientService] Skipping appointment with invalid service type: ${serviceTypeCode}`);
+                log.debug({ serviceTypeCode }, 'Skipping appointment with invalid service type');
                 skippedCount++;
                 continue;
             }
@@ -297,7 +300,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             try {
                 patient = await fhirGet(`/Patient/${patientId}`);
             } catch (e) {
-                console.log(`[PatientService] Failed to fetch patient ${patientId}: ${e.message}`);
+                log.debug({ patientId, err: e }, 'Failed to fetch patient');
                 continue;
             }
 
@@ -311,8 +314,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     ? `${svcCode} - ${svcDisplay}`
                     : svcDisplay || svcCode || 'Visit';
 
-                // Debug: log patient ID only (no PHI)
-                console.log(`[PatientService] Patient ${patient.id}: name fields present=${!!name.given?.[0]}, family=${!!name.family}, text=${!!name.text}`);
+                log.debug({ patientId: patient.id, hasGiven: !!name.given?.[0], hasFamily: !!name.family, hasText: !!name.text }, 'Patient name fields');
 
                 // Build name with fallbacks
                 const firstName = name.given?.[0] || '';
@@ -322,7 +324,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                 // If no name available, use patient ID as fallback
                 if (!fullName) {
                     fullName = `Patient ${patient.id}`;
-                    console.log(`[PatientService] Warning: No name found for patient ${patient.id}`);
+                    log.warn({ patientId: patient.id }, 'No name found for patient');
                 }
 
                 const patientData = {
@@ -337,7 +339,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     visitType: visitType,
                     status: appointment.status
                 };
-                console.log(`[PatientService] Adding patient: ${patientData.id}`);
+                log.debug({ patientId: patientData.id }, 'Adding patient');
                 scheduledPatients.push(patientData);
             }
         }
@@ -349,11 +351,11 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
             return a.visitTime.localeCompare(b.visitTime);
         });
 
-        console.log(`[PatientService] Found ${scheduledPatients.length} patients for ${dateStr} (filtered ${skippedCount} of ${totalAppointments} appointments by visit type)`);
+        log.info({ patientCount: scheduledPatients.length, dateStr, skipped: skippedCount, total: totalAppointments }, 'Patients loaded');
         return scheduledPatients;
 
     } catch (error) {
-        console.error('[PatientService] Get patients by date failed:', error.message);
+        log.error({ err: error }, 'Get patients by date failed');
         return [];
     }
 }

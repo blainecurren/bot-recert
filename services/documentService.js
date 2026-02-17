@@ -6,6 +6,9 @@
 const { fhirGet, getAccessToken } = require('./fhirClient');
 const { client: pythonBackend } = require('./pythonBackendClient');
 const azureOpenAI = require('./azureOpenAIService');
+const { createLogger } = require('./logger');
+
+const log = createLogger('DocumentService');
 
 /**
  * Get all documents for a patient
@@ -16,7 +19,7 @@ const azureOpenAI = require('./azureOpenAIService');
 async function getPatientDocuments(patientId, options = {}) {
     const { limit = 50, type = null, dateFrom = null } = options;
 
-    console.log(`[DocumentService] Fetching documents for patient ${patientId}`);
+    log.info({ patientId }, 'Fetching documents');
 
     try {
         const params = {
@@ -36,7 +39,7 @@ async function getPatientDocuments(patientId, options = {}) {
         const bundle = await fhirGet('/DocumentReference', params);
 
         if (!bundle.entry || bundle.entry.length === 0) {
-            console.log('[DocumentService] No documents found');
+            log.debug({ patientId }, 'No documents found');
             return [];
         }
 
@@ -58,11 +61,11 @@ async function getPatientDocuments(patientId, options = {}) {
             };
         });
 
-        console.log(`[DocumentService] Found ${documents.length} documents`);
+        log.info({ count: documents.length }, 'Documents found');
         return documents;
 
     } catch (error) {
-        console.error('[DocumentService] Error fetching documents:', error.message);
+        log.error({ err: error, patientId }, 'Error fetching documents');
         return [];
     }
 }
@@ -136,7 +139,7 @@ async function extractDocumentText(attachmentUrl) {
         throw new Error('Attachment URL is required');
     }
 
-    console.log(`[DocumentService] Extracting text from: ${attachmentUrl}`);
+    log.debug('Extracting text from attachment');
 
     try {
         const token = await getAccessToken();
@@ -147,7 +150,7 @@ async function extractDocumentText(attachmentUrl) {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
-        console.log(`[DocumentService] Extracted ${response.data.char_count} characters from ${response.data.page_count} pages`);
+        log.debug({ charCount: response.data.char_count, pageCount: response.data.page_count }, 'Text extracted');
 
         return { success: true, ...response.data };
 
@@ -155,7 +158,7 @@ async function extractDocumentText(attachmentUrl) {
         const status = error.response?.status;
         const detail = error.response?.data?.detail || error.message;
 
-        console.error(`[DocumentService] Text extraction failed (${status}):`, detail);
+        log.error({ status, detail }, 'Text extraction failed');
 
         return {
             success: false,
@@ -175,7 +178,7 @@ async function extractDocumentText(attachmentUrl) {
 async function extractAndSummarizeDocument(attachmentUrl, options = {}) {
     const { documentType = 'clinical note', focusAreas = null } = options;
 
-    console.log(`[DocumentService] Extracting and summarizing document`);
+    log.info({ documentType }, 'Extracting and summarizing document');
 
     // Step 1: Extract text from PDF
     const extractResult = await extractDocumentText(attachmentUrl);
@@ -215,7 +218,7 @@ async function extractAndSummarizeDocument(attachmentUrl, options = {}) {
 async function summarizePatientDocuments(patientId, options = {}) {
     const { limit = 10, documentTypes = null, patientContext = null } = options;
 
-    console.log(`[DocumentService] Summarizing documents for patient ${patientId}`);
+    log.info({ patientId }, 'Summarizing patient documents');
 
     // Get recent documents
     const documents = await getRecentDocuments(patientId);
@@ -288,7 +291,7 @@ async function batchFetchAndSummarizeDocuments(patients, options = {}) {
         documentTypes = null // null = all types
     } = options;
 
-    console.log(`[DocumentService] Batch processing documents for ${patients.length} patients`);
+    log.info({ patientCount: patients.length }, 'Batch processing documents');
 
     const results = {};
     const startTime = Date.now();
@@ -301,7 +304,7 @@ async function batchFetchAndSummarizeDocuments(patients, options = {}) {
 
         const batchPromises = batch.map(async (patient) => {
             const patientId = patient.id;
-            console.log(`[DocumentService] Processing documents for patient ${patientId}`);
+            log.debug({ patientId }, 'Processing documents for patient');
 
             try {
                 // Get recent documents for this patient
@@ -320,7 +323,7 @@ async function batchFetchAndSummarizeDocuments(patients, options = {}) {
                 // Limit number of docs to process
                 const docsToProcess = pdfDocs.slice(0, maxDocsPerPatient);
 
-                console.log(`[DocumentService] Patient ${patientId}: ${documents.length} docs, ${pdfDocs.length} PDFs, processing ${docsToProcess.length}`);
+                log.debug({ patientId, totalDocs: documents.length, pdfCount: pdfDocs.length, processing: docsToProcess.length }, 'Document counts');
 
                 // Extract and summarize each document
                 const documentSummaries = [];
@@ -353,7 +356,7 @@ async function batchFetchAndSummarizeDocuments(patients, options = {}) {
                             });
                         }
                     } catch (docError) {
-                        console.error(`[DocumentService] Error processing doc ${doc.id}:`, docError.message);
+                        log.error({ err: docError, documentId: doc.id }, 'Error processing document');
                         documentSummaries.push({
                             documentId: doc.id,
                             documentType: doc.type,
@@ -407,7 +410,7 @@ async function batchFetchAndSummarizeDocuments(patients, options = {}) {
                 };
 
             } catch (patientError) {
-                console.error(`[DocumentService] Error processing patient ${patientId}:`, patientError.message);
+                log.error({ err: patientError, patientId }, 'Error processing patient documents');
                 results[patientId] = {
                     success: false,
                     error: patientError.message,
@@ -421,7 +424,7 @@ async function batchFetchAndSummarizeDocuments(patients, options = {}) {
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[DocumentService] Batch processing complete in ${elapsed}s for ${patients.length} patients`);
+    log.info({ elapsed, patientCount: patients.length }, 'Batch processing complete');
 
     return results;
 }

@@ -6,6 +6,9 @@
 
 const fhirService = require('./fhirService');
 const { RESOURCE_CATEGORIES } = require('../cards/cardBuilder');
+const { createLogger } = require('./logger');
+
+const log = createLogger('DataFetchService');
 
 // Quick select mappings
 const QUICK_SELECT_RESOURCES = {
@@ -178,7 +181,7 @@ async function fetchSelectedResources(patientId, workerId, selectedResources) {
         const mapping = RESOURCE_METHOD_MAP[resourceId];
 
         if (!mapping) {
-            console.warn(`[DataFetchService] No mapping found for resource: ${resourceId}`);
+            log.warn({ resourceId }, 'No mapping found for resource');
             errors.push({ resourceId, error: 'Resource type not supported' });
             return;
         }
@@ -189,7 +192,7 @@ async function fetchSelectedResources(patientId, workerId, selectedResources) {
 
             if (!method) {
                 // Method not implemented yet - return placeholder
-                console.warn(`[DataFetchService] Method not implemented: ${mapping.method}`);
+                log.warn({ method: mapping.method }, 'Method not implemented');
                 data = { placeholder: true, message: 'Data fetch not yet implemented' };
             } else if (mapping.needsWorkerId) {
                 data = await method(workerId);
@@ -205,7 +208,7 @@ async function fetchSelectedResources(patientId, workerId, selectedResources) {
                 label: getResourceLabel(resourceId)
             };
         } catch (error) {
-            console.error(`[DataFetchService] Error fetching ${resourceId}:`, error.message);
+            log.error({ err: error, resourceId }, 'Error fetching resource');
             errors.push({ resourceId, error: error.message });
         }
     });

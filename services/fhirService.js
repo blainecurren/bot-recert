@@ -9,6 +9,8 @@
 
 const { fhirGet } = require('./fhirClient');
 const pythonBackend = require('./pythonBackendClient');
+const { createLogger } = require('./logger');
+const log = createLogger('FHIR');
 
 // Use Python backend by default, can be disabled via env var
 const USE_PYTHON_BACKEND = process.env.USE_PYTHON_BACKEND !== 'false';
@@ -89,7 +91,7 @@ async function tryPythonBackend(resourceId, patientId = null, workerId = null) {
         const result = await pythonBackend.fetchResource(resourceId, patientId, workerId);
         return result?.data || null;
     } catch (error) {
-        console.log(`[FHIR] Python backend failed for ${resourceId}, using fallback:`, error.message);
+        log.debug({ resourceId, err: error }, 'Python backend failed, using fallback');
         return null;
     }
 }
@@ -114,7 +116,7 @@ async function searchPatients(searchTerm) {
 
         return bundle.entry.map(entry => transformPatient(entry.resource));
     } catch (error) {
-        console.error('[FHIR] Patient search failed:', error.message);
+        log.error({ err: error }, 'Patient search failed');
         throw error;
     }
 }
@@ -162,7 +164,7 @@ async function getWorkerById(workerId) {
 
         return null;
     } catch (error) {
-        console.error('[FHIR] Get worker failed:', error.message);
+        log.error({ err: error }, 'Get worker failed');
         return null;
     }
 }
@@ -172,7 +174,7 @@ async function getWorkerById(workerId) {
  */
 async function getRecertPatients(workerId = null, daysAhead = 30) {
     try {
-        console.log('[FHIR] Getting recert patients, daysAhead:', daysAhead);
+        log.info({ daysAhead }, 'Getting recert patients');
 
         const today = new Date();
         const bundle = await fhirGet('/EpisodeOfCare', {
@@ -237,11 +239,11 @@ async function getRecertPatients(workerId = null, daysAhead = 30) {
         }
 
         recertPatients.sort((a, b) => a.daysUntilRecert - b.daysUntilRecert);
-        console.log(`[FHIR] Found ${recertPatients.length} patients with upcoming recerts`);
+        log.info({ count: recertPatients.length }, 'Found patients with upcoming recerts');
         return recertPatients;
 
     } catch (error) {
-        console.error('[FHIR] Get recert patients failed:', error.message);
+        log.error({ err: error }, 'Get recert patients failed');
         throw error;
     }
 }
@@ -273,7 +275,7 @@ async function getPatientEpisodes(patientId) {
 
         return bundle.entry.map(entry => transformEpisode(entry.resource));
     } catch (error) {
-        console.error('[FHIR] Get episodes failed:', error.message);
+        log.error({ err: error }, 'Get episodes failed');
         throw error;
     }
 }
@@ -306,7 +308,7 @@ async function getConditions(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get conditions failed:', error.message);
+        log.error({ err: error }, 'Get conditions failed');
         return [];
     }
 }
@@ -340,7 +342,7 @@ async function getMedications(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get medications failed:', error.message);
+        log.error({ err: error }, 'Get medications failed');
         return [];
     }
 }
@@ -374,7 +376,7 @@ async function getEncounters(patientId, limit = 10) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get encounters failed:', error.message);
+        log.error({ err: error }, 'Get encounters failed');
         return [];
     }
 }
@@ -401,7 +403,7 @@ async function getCarePlanGoals(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get goals failed:', error.message);
+        log.error({ err: error }, 'Get goals failed');
         return [];
     }
 }
@@ -436,7 +438,7 @@ async function getDocuments(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get documents failed:', error.message);
+        log.error({ err: error }, 'Get documents failed');
         return [];
     }
 }
@@ -470,7 +472,7 @@ async function getAllergyIntolerances(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get allergies failed:', error.message);
+        log.error({ err: error }, 'Get allergies failed');
         return [];
     }
 }
@@ -502,7 +504,7 @@ async function getObservationsByCode(patientId, loincCode, limit = 10) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get observations failed:', error.message);
+        log.error({ err: error }, 'Get observations failed');
         return [];
     }
 }
@@ -546,7 +548,7 @@ async function getBloodPressure(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get blood pressure failed:', error.message);
+        log.error({ err: error }, 'Get blood pressure failed');
         return [];
     }
 }
@@ -642,7 +644,7 @@ async function getWoundAssessment(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get wound assessment failed:', error.message);
+        log.error({ err: error }, 'Get wound assessment failed');
         return [];
     }
 }
@@ -692,7 +694,7 @@ async function getCarePlanByCategory(patientId, category) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get care plan failed:', error.message);
+        log.error({ err: error }, 'Get care plan failed');
         return [];
     }
 }
@@ -726,7 +728,7 @@ async function getCareTeam(patientId) {
         }
         return teams;
     } catch (error) {
-        console.error('[FHIR] Get care team failed:', error.message);
+        log.error({ err: error }, 'Get care team failed');
         return [];
     }
 }
@@ -761,7 +763,7 @@ async function getDocumentsByType(patientId, typeCode) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get documents by type failed:', error.message);
+        log.error({ err: error }, 'Get documents by type failed');
         return [];
     }
 }
@@ -863,7 +865,7 @@ async function getWounds(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get wounds failed:', error.message);
+        log.error({ err: error }, 'Get wounds failed');
         return [];
     }
 }
@@ -908,13 +910,13 @@ async function getPatientVisits(patientId, filterByValidCodes = true) {
         // Filter to only valid visit type codes
         if (filterByValidCodes) {
             const filtered = appointments.filter(apt => isValidVisitTypeCode(apt.typeCode));
-            console.log(`[FHIR] Filtered appointments: ${filtered.length} of ${appointments.length} have valid visit type codes`);
+            log.debug({ filtered: filtered.length, total: appointments.length }, 'Filtered appointments by visit type');
             return filtered;
         }
 
         return appointments;
     } catch (error) {
-        console.error('[FHIR] Get patient visits failed:', error.message);
+        log.error({ err: error }, 'Get patient visits failed');
         return [];
     }
 }
@@ -959,7 +961,7 @@ async function getIDGMeetings(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get IDG meetings failed:', error.message);
+        log.error({ err: error }, 'Get IDG meetings failed');
         return [];
     }
 }
@@ -990,7 +992,7 @@ async function getRelatedPersons(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get related persons failed:', error.message);
+        log.error({ err: error }, 'Get related persons failed');
         return [];
     }
 }
@@ -1038,7 +1040,7 @@ async function getAgency(patientId) {
             type: 'Agency'
         };
     } catch (error) {
-        console.error('[FHIR] Get agency failed:', error.message);
+        log.error({ err: error }, 'Get agency failed');
         return null;
     }
 }
@@ -1097,7 +1099,7 @@ async function getBranch(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get branch failed:', error.message);
+        log.error({ err: error }, 'Get branch failed');
         return [];
     }
 }
@@ -1129,7 +1131,7 @@ async function getPayorSource(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get payor source failed:', error.message);
+        log.error({ err: error }, 'Get payor source failed');
         return [];
     }
 }
@@ -1157,7 +1159,7 @@ async function getPhysician(patientId) {
             specialty: practitioner.qualification?.[0]?.code?.coding?.[0]?.display
         };
     } catch (error) {
-        console.error('[FHIR] Get physician failed:', error.message);
+        log.error({ err: error }, 'Get physician failed');
         return null;
     }
 }
@@ -1192,7 +1194,7 @@ async function getServiceLocation(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get service location failed:', error.message);
+        log.error({ err: error }, 'Get service location failed');
         return [];
     }
 }
@@ -1221,7 +1223,7 @@ async function getWorkerLocation(workerId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get worker location failed:', error.message);
+        log.error({ err: error }, 'Get worker location failed');
         return [];
     }
 }
@@ -1255,7 +1257,7 @@ async function getReferralOrders(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get referral orders failed:', error.message);
+        log.error({ err: error }, 'Get referral orders failed');
         return [];
     }
 }
@@ -1284,7 +1286,7 @@ async function getAccount(patientId) {
             };
         });
     } catch (error) {
-        console.error('[FHIR] Get account failed:', error.message);
+        log.error({ err: error }, 'Get account failed');
         return [];
     }
 }

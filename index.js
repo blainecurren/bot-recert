@@ -1,5 +1,9 @@
 require('dotenv').config();
 
+const { rootLogger, createLogger, createRequestLogger } = require('./services/logger');
+
+const log = createLogger('Bot');
+
 // Validate required environment variables
 const REQUIRED_ENV = {
     bot: ['MicrosoftAppId', 'MicrosoftAppPassword', 'MicrosoftAppType', 'MicrosoftAppTenantId'],
@@ -14,20 +18,18 @@ if (process.env.LOCAL_DEBUG !== 'true') {
         if (groupMissing.length > 0) missing[group] = groupMissing;
     }
     if (Object.keys(missing).length > 0) {
-        console.warn('\n=== MISSING ENVIRONMENT VARIABLES ===');
         for (const [group, vars] of Object.entries(missing)) {
-            console.warn(`  [${group}]: ${vars.join(', ')}`);
+            log.warn({ group, vars }, 'Missing environment variables');
         }
-        console.warn('Some features may not work. Set these in your .env file.\n');
     }
 }
 
 // Catch unhandled errors
 process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
+    rootLogger.fatal({ err }, 'Uncaught exception');
 });
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    rootLogger.fatal({ err: reason }, 'Unhandled rejection');
 });
 
 const { ActivityHandler, CloudAdapter, ConfigurationBotFrameworkAuthentication, CardFactory } = require('botbuilder');
@@ -51,7 +53,7 @@ const LOCAL_DEBUG = process.env.LOCAL_DEBUG === 'true';
 let adapter;
 
 if (LOCAL_DEBUG) {
-    console.log('*** LOCAL DEBUG MODE - Authentication disabled ***');
+    log.info('LOCAL DEBUG MODE - Authentication disabled');
     // Use empty credentials for local testing
     const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication({});
     adapter = new CloudAdapter(botFrameworkAuth);
@@ -68,8 +70,8 @@ if (LOCAL_DEBUG) {
 
 // Error handler
 adapter.onTurnError = async (context, error) => {
-    console.error(`\n [onTurnError] Error: ${error}`);
-    console.error(error.stack);
+    const rlog = createRequestLogger('Bot', context);
+    rlog.error({ err: error }, 'onTurnError');
     await context.sendActivity('Oops. Something went wrong!');
 };
 
@@ -101,7 +103,8 @@ class RecertBot extends ActivityHandler {
                     await this.sendWelcomeCard(context);
                 }
             } catch (error) {
-                console.error('Error handling message:', error);
+                const rlog = createRequestLogger('Bot', context);
+                rlog.error({ err: error }, 'Error handling message');
                 await context.sendActivity('Sorry, something went wrong. Please try again.');
             }
 
@@ -159,7 +162,7 @@ class RecertBot extends ActivityHandler {
             }
         }
         if (evicted > 0) {
-            console.log(`[Bot] Evicted ${evicted} expired conversation context(s). Active: ${this.workerContext.size}`);
+            log.info({ evicted, active: this.workerContext.size }, 'Evicted expired conversation contexts');
         }
     }
 
@@ -176,7 +179,8 @@ class RecertBot extends ActivityHandler {
      * Handle Adaptive Card submit actions
      */
     async handleCardAction(context, value) {
-        console.log(`[Bot] Card action: ${value.action}`);
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info({ action: value.action }, 'Card action received');
 
         switch (value.action) {
             case 'validateWorker':
@@ -229,7 +233,7 @@ class RecertBot extends ActivityHandler {
                 break;
 
             default:
-                console.log(`Unknown action: ${value.action}`);
+                rlog.warn({ action: value.action }, 'Unknown action');
                 await this.sendWelcomeCard(context);
         }
     }
@@ -261,7 +265,8 @@ class RecertBot extends ActivityHandler {
         }
         workerId = sanitized;
 
-        console.log('[Bot] Validating worker');
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info('Validating worker');
 
         // Send processing message
         await context.sendActivity('Validating your Worker ID...');
@@ -295,7 +300,7 @@ class RecertBot extends ActivityHandler {
             await this.handleLoadPatientsByDate(context, worker.id, today);
 
         } catch (error) {
-            console.error('Error validating worker:', error);
+            rlog.error({ err: error }, 'Error validating worker');
             const errorCard = cardBuilder.buildErrorCard(
                 'Error',
                 'There was an error validating your Worker ID. Please try again.'
@@ -319,7 +324,8 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`Loading patients for worker ${workerId} on date ${selectedDate}`);
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info({ workerId, selectedDate }, 'Loading patients by date');
 
         // Send processing message immediately
         await context.sendActivity(`Loading your patients for ${selectedDate}...`);
@@ -330,7 +336,7 @@ class RecertBot extends ActivityHandler {
 
             // If no context, validate worker again
             if (!workerCtx || !workerCtx.worker) {
-                console.log('No worker context found, re-validating worker');
+                rlog.debug('No worker context found, re-validating worker');
                 const worker = await patientService.getWorkerById(workerId);
                 if (!worker) {
                     await context.sendActivity('Session expired. Please start over.');
@@ -341,9 +347,9 @@ class RecertBot extends ActivityHandler {
             }
 
             // Get patients scheduled for this worker on this date
-            console.log(`[Bot] Fetching patients for worker ${workerId} on ${selectedDate}`);
+            rlog.debug({ workerId, selectedDate }, 'Fetching patients');
             const patients = await patientService.getPatientsByWorkerAndDate(workerId, selectedDate);
-            console.log(`[Bot] Found ${patients.length} patients for ${selectedDate}`);
+            rlog.info({ patientCount: patients.length, selectedDate }, 'Patients loaded');
 
             // Re-fetch context after async call to avoid overwriting concurrent changes
             workerCtx = this._getContext(conversationId) || workerCtx;
@@ -365,12 +371,11 @@ class RecertBot extends ActivityHandler {
 
             // Pre-load document summaries in the background (fire-and-forget)
             this.preloadDocumentSummaries(context, patients, conversationId).catch(err => {
-                console.error('[Bot] Background document preload failed:', err.message);
+                rlog.error({ err }, 'Background document preload failed');
             });
 
         } catch (error) {
-            console.error('Error loading patients by date:', error);
-            console.error('Error details:', error.stack);
+            rlog.error({ err: error }, 'Error loading patients by date');
             const errorCard = cardBuilder.buildErrorCard(
                 'Error Loading Patients',
                 'There was an error loading patients for this date. Please try again.'
@@ -393,7 +398,7 @@ class RecertBot extends ActivityHandler {
             // Notify user that AI analysis is starting
             await context.sendActivity(`Analyzing clinical documents for ${patients.length} patient(s)... This may take a moment.`);
 
-            console.log(`[Bot] Starting document pre-load for ${patients.length} patients`);
+            log.info({ patientCount: patients.length }, 'Starting document pre-load');
             const startTime = Date.now();
 
             // Batch fetch and summarize documents for all patients
@@ -403,7 +408,7 @@ class RecertBot extends ActivityHandler {
             });
 
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-            console.log(`[Bot] Document pre-load complete in ${elapsed}s`);
+            log.info({ elapsed, patientCount: patients.length }, 'Document pre-load complete');
 
             // Update the worker context with summaries (only if patient list hasn't changed)
             const workerCtx = this._getContext(conversationId);
@@ -427,11 +432,11 @@ class RecertBot extends ActivityHandler {
                 // Notify user that analysis is complete
                 await context.sendActivity(`AI analysis complete. Processed ${totalDocs} document(s) with ${successfulSummaries} summary(ies) ready. Select a patient to view their clinical summary.`);
             } else if (listChanged) {
-                console.log('[Bot] Patient list changed during preload, discarding stale summaries');
+                log.debug('Patient list changed during preload, discarding stale summaries');
             }
 
         } catch (error) {
-            console.error('[Bot] Error pre-loading document summaries:', error);
+            log.error({ err: error }, 'Error pre-loading document summaries');
             // Don't fail the whole flow, just log the error
             await context.sendActivity('Note: Document analysis encountered some issues. You can still view patient data manually.');
         }
@@ -467,7 +472,8 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log('[Bot] Loading patients (legacy)');
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info('Loading patients (legacy)');
 
         try {
             // Validate worker
@@ -485,7 +491,7 @@ class RecertBot extends ActivityHandler {
 
             // Get recert patients for this worker
             const patients = await patientService.getRecertPatientsByWorker(workerId);
-            console.log(`Found ${patients.length} recert patients for ${worker.name}`);
+            rlog.info({ patientCount: patients.length }, 'Recert patients loaded');
 
             // Store worker context for back navigation
             const conversationId = context.activity.conversation.id;
@@ -497,7 +503,7 @@ class RecertBot extends ActivityHandler {
             await context.sendActivity({ attachments: [card] });
 
         } catch (error) {
-            console.error('Error loading patients:', error);
+            rlog.error({ err: error }, 'Error loading patients');
             const errorCard = cardBuilder.buildErrorCard(
                 'Error Loading Patients',
                 'There was an error loading your patients. Please try again.'
@@ -533,7 +539,8 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`[Bot] Generating summaries for ${selectedPatientIds.length} patients`);
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info({ count: selectedPatientIds.length }, 'Generating summaries');
 
         // Send processing card
         const processingCard = cardBuilder.buildProcessingCard(selectedPatientIds.length, value.workerId);
@@ -552,7 +559,7 @@ class RecertBot extends ActivityHandler {
                     await context.sendActivity({ attachments: [card] });
                 }
             } catch (error) {
-                console.error(`Error generating summary for patient ${patientId}:`, error);
+                rlog.error({ err: error, patientId }, 'Error generating summary');
                 await context.sendActivity(`Error generating summary for patient ${patientId}.`);
             }
         }
@@ -593,7 +600,8 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log(`[Bot] Patient selected, skipSummary: ${skipSummary}`);
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info({ patientId, skipSummary }, 'Patient selected');
 
         try {
             const conversationId = context.activity.conversation.id;
@@ -627,7 +635,7 @@ class RecertBot extends ActivityHandler {
 
             if (!skipSummary && patientSummary) {
                 // Show the AI summary card
-                console.log(`[Bot] Showing AI summary for patient ${patientId}`);
+                rlog.debug({ patientId }, 'Showing AI summary');
                 const summaryCard = cardBuilder.buildAISummaryCard(patient, patientSummary, workerCtx.worker);
                 const card = CardFactory.adaptiveCard(summaryCard);
                 await context.sendActivity({ attachments: [card] });
@@ -639,7 +647,7 @@ class RecertBot extends ActivityHandler {
             }
 
         } catch (error) {
-            console.error('Error handling patient selection:', error);
+            rlog.error({ err: error }, 'Error handling patient selection');
             await context.sendActivity('Sorry, there was an error. Please try again.');
             await this.sendWelcomeCard(context);
         }
@@ -649,7 +657,8 @@ class RecertBot extends ActivityHandler {
      * Handle fetching selected FHIR resources
      */
     async handleFetchResources(context, value) {
-        console.log('Handling fetchResources action');
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info('Handling fetchResources action');
 
         try {
             const conversationId = context.activity.conversation.id;
@@ -670,7 +679,7 @@ class RecertBot extends ActivityHandler {
 
             // Extract selected resources from the form data
             const selectedResources = dataFetchService.extractSelectedResources(value);
-            console.log(`Selected resources: ${selectedResources.join(', ')}`);
+            rlog.info({ resources: selectedResources }, 'Selected resources');
 
             if (selectedResources.length === 0) {
                 await context.sendActivity('Please select at least one data type to fetch.');
@@ -688,6 +697,7 @@ class RecertBot extends ActivityHandler {
             );
 
             // Apply formatting to non-AI data types
+            const aiLog = createLogger('AISummary');
             for (const resourceId of Object.keys(results)) {
                 const result = results[resourceId];
                 if (!result.needsAISummary && result.data) {
@@ -696,7 +706,7 @@ class RecertBot extends ActivityHandler {
                 // TODO: Apply AI summarization for complex types
                 // For now, just format everything
                 if (result.needsAISummary && result.data && !result.data.placeholder) {
-                    result.summary = await this.generateAISummary(resourceId, result.data);
+                    result.summary = await this.generateAISummary(resourceId, result.data, aiLog);
                 }
             }
 
@@ -717,7 +727,7 @@ class RecertBot extends ActivityHandler {
             await context.sendActivity({ attachments: [card] });
 
         } catch (error) {
-            console.error('Error fetching resources:', error);
+            rlog.error({ err: error }, 'Error fetching resources');
             const errorCard = cardBuilder.buildErrorCard(
                 'Error Fetching Data',
                 'There was an error fetching the selected data. Please try again.'
@@ -730,7 +740,9 @@ class RecertBot extends ActivityHandler {
     /**
      * Generate AI summary for complex data types using Azure OpenAI
      */
-    async generateAISummary(resourceId, data) {
+    async generateAISummary(resourceId, data, aiLog) {
+        if (!aiLog) aiLog = createLogger('AISummary');
+
         if (!data || (Array.isArray(data) && data.length === 0)) {
             return 'No data available for summarization.';
         }
@@ -759,7 +771,7 @@ class RecertBot extends ActivityHandler {
                                 continue;
                             }
                         } catch (docError) {
-                            console.error(`[AI Summary] Error processing PDF:`, docError.message);
+                            aiLog.error({ err: docError }, 'Error processing PDF');
                         }
                     }
 
@@ -775,7 +787,7 @@ class RecertBot extends ActivityHandler {
                             if (looksLikeBase64) {
                                 try {
                                     textContent = Buffer.from(doc.content, 'base64').toString('utf-8');
-                                    console.log(`[AI Summary] Decoded base64 content: ${textContent.length} chars`);
+                                    aiLog.debug({ charCount: textContent.length }, 'Decoded base64 content');
                                 } catch (decodeErr) {
                                     // Not base64, use as-is
                                 }
@@ -792,7 +804,7 @@ class RecertBot extends ActivityHandler {
                                 }
                             }
                         } catch (err) {
-                            console.error(`[AI Summary] Error summarizing content:`, err.message);
+                            aiLog.error({ err }, 'Error summarizing content');
                         }
                     }
 
@@ -856,7 +868,7 @@ class RecertBot extends ActivityHandler {
             return `**${resourceLabel}:** ${count} record(s) found.`;
 
         } catch (error) {
-            console.error(`[AI Summary] Error generating summary for ${resourceId}:`, error.message);
+            aiLog.error({ err: error, resourceId }, 'Error generating AI summary');
             return `**${resourceLabel}:** ${count} record(s) found. (AI summary unavailable)`;
         }
     }
@@ -871,7 +883,8 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log('[Bot] Viewing documents for patient');
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info({ patientId }, 'Viewing documents');
 
         try {
             const conversationId = context.activity.conversation.id;
@@ -882,7 +895,7 @@ class RecertBot extends ActivityHandler {
 
             // Fetch documents from FHIR
             const documents = await documentService.getPatientDocuments(patientId, { limit: 100 });
-            console.log(`Found ${documents.length} documents for patient ${patientId}`);
+            rlog.info({ patientId, documentCount: documents.length }, 'Documents fetched');
 
             // Get patient info from context or create minimal object
             let patient = workerCtx?.selectedPatient;
@@ -906,7 +919,7 @@ class RecertBot extends ActivityHandler {
             await context.sendActivity({ attachments: [card] });
 
         } catch (error) {
-            console.error('Error fetching documents:', error);
+            rlog.error({ err: error }, 'Error fetching documents');
             const errorCard = cardBuilder.buildErrorCard(
                 'Error Fetching Documents',
                 'There was an error fetching documents. Please try again.'
@@ -945,17 +958,18 @@ class RecertBot extends ActivityHandler {
             return;
         }
 
-        console.log('[Bot] Searching for patients');
+        const rlog = createRequestLogger('Bot', context);
+        rlog.info('Searching for patients');
 
         try {
             const patients = await patientService.searchPatients(searchTerm);
-            console.log(`Found ${patients.length} patients`);
+            rlog.info({ resultCount: patients.length }, 'Patient search results');
 
             const listCard = cardBuilder.buildPatientListCard(searchTerm, patients);
             const card = CardFactory.adaptiveCard(listCard);
             await context.sendActivity({ attachments: [card] });
         } catch (error) {
-            console.error('Error searching patients:', error);
+            rlog.error({ err: error }, 'Error searching patients');
             await context.sendActivity('Sorry, there was an error searching for patients. Please try again.');
             await this.sendWelcomeCard(context);
         }
@@ -971,13 +985,13 @@ app.get('/', (req, res) => {
 
 // Listen for incoming requests
 app.post('/api/messages', async (req, res) => {
-    console.log('[Bot] Incoming activity:', req.body?.type || 'unknown');
+    log.debug({ activityType: req.body?.type }, 'Incoming activity');
     try {
         await adapter.process(req, res, async (context) => {
             await bot.run(context);
         });
     } catch (error) {
-        console.error('Error processing activity:', error);
+        log.error({ err: error }, 'Error processing activity');
         if (!res.headersSent) {
             res.status(500).send({ error: error.message });
         }
@@ -987,21 +1001,19 @@ app.post('/api/messages', async (req, res) => {
 // Start server
 const port = process.env.PORT || 3978;
 const server = app.listen(port, '0.0.0.0', () => {
-    console.log(`\nBot is running on http://localhost:${port}/api/messages`);
-    console.log(`Mode: ${LOCAL_DEBUG ? 'LOCAL DEBUG' : 'Production'}`);
-    console.log(`Press Ctrl+C to stop.\n`);
+    log.info({ port, mode: LOCAL_DEBUG ? 'LOCAL DEBUG' : 'Production' }, 'Bot started');
 });
 
 server.on('error', (err) => {
-    console.error('Server error:', err);
+    rootLogger.fatal({ err }, 'Server error');
 });
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-    console.log('Shutting down...');
+    rootLogger.info('Shutting down');
     clearInterval(bot._evictionInterval);
     server.close(() => {
-        console.log('Server closed.');
+        rootLogger.info('Server closed');
         process.exit(0);
     });
 });

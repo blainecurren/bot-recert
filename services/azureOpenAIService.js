@@ -4,6 +4,8 @@
  */
 
 const { AzureOpenAI } = require("openai");
+const { createLogger } = require("./logger");
+const log = createLogger("AzureOpenAI");
 
 // Initialize Azure OpenAI client
 let client = null;
@@ -42,7 +44,7 @@ async function summarizeDocument(documentText, options = {}) {
 
     const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
 
-    console.log(`[AzureOpenAI] Summarizing ${documentType} (${documentText.length} chars)`);
+    log.info({ documentType, charCount: documentText.length }, 'Summarizing document');
 
     const systemPrompt = `You are a clinical documentation specialist helping home health nurses prepare for patient visits. 
 Your task is to summarize clinical documents concisely and accurately.
@@ -76,7 +78,7 @@ Guidelines:
 
         const summary = response.choices[0]?.message?.content;
 
-        console.log(`[AzureOpenAI] Summary generated (${summary?.length || 0} chars)`);
+        log.debug({ charCount: summary?.length || 0 }, 'Summary generated');
 
         return {
             success: true,
@@ -89,7 +91,7 @@ Guidelines:
         };
 
     } catch (error) {
-        console.error('[AzureOpenAI] Error:', error.message);
+        log.error({ err: error }, 'Summarization failed');
         return {
             success: false,
             error: error.message,
@@ -112,7 +114,7 @@ async function summarizeMultipleDocuments(documents, options = {}) {
 
     const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
 
-    console.log(`[AzureOpenAI] Consolidating ${documents.length} documents`);
+    log.info({ documentCount: documents.length }, 'Consolidating documents');
 
     const systemPrompt = `You are a clinical documentation specialist helping home health nurses prepare for recertification visits.
 Your task is to consolidate multiple clinical documents into a comprehensive episode summary.
@@ -152,7 +154,7 @@ Guidelines:
 
         const summary = response.choices[0]?.message?.content;
 
-        console.log(`[AzureOpenAI] Consolidated summary generated (${summary?.length || 0} chars)`);
+        log.debug({ charCount: summary?.length || 0 }, 'Consolidated summary generated');
 
         return {
             success: true,
@@ -166,7 +168,7 @@ Guidelines:
         };
 
     } catch (error) {
-        console.error('[AzureOpenAI] Error:', error.message);
+        log.error({ err: error }, 'Document consolidation failed');
         return {
             success: false,
             error: error.message,
@@ -183,7 +185,7 @@ Guidelines:
 async function extractClinicalData(documentText) {
     const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
 
-    console.log(`[AzureOpenAI] Extracting clinical data from text (${documentText.length} chars)`);
+    log.info({ charCount: documentText.length }, 'Extracting clinical data');
 
     const systemPrompt = `You are a clinical data extraction specialist. Extract structured information from clinical documents.
 Return your response as a JSON object with the following structure (include only fields that are present in the document):
@@ -215,7 +217,7 @@ Return your response as a JSON object with the following structure (include only
         const content = response.choices[0]?.message?.content;
         const extractedData = JSON.parse(content);
 
-        console.log('[AzureOpenAI] Clinical data extracted successfully');
+        log.info('Clinical data extracted');
 
         return {
             success: true,
@@ -228,7 +230,7 @@ Return your response as a JSON object with the following structure (include only
         };
 
     } catch (error) {
-        console.error('[AzureOpenAI] Extraction error:', error.message);
+        log.error({ err: error }, 'Clinical data extraction failed');
         return {
             success: false,
             error: error.message,
@@ -245,7 +247,7 @@ Return your response as a JSON object with the following structure (include only
 async function generateRecertTalkingPoints(episodeData) {
     const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
 
-    console.log('[AzureOpenAI] Generating recertification talking points');
+    log.info('Generating recertification talking points');
 
     const systemPrompt = `You are a home health clinical consultant helping nurses prepare for recertification visits.
 Based on the episode data provided, generate:
@@ -273,7 +275,7 @@ Format your response clearly with sections for each area.`;
 
         const talkingPoints = response.choices[0]?.message?.content;
 
-        console.log('[AzureOpenAI] Talking points generated');
+        log.info('Talking points generated');
 
         return {
             success: true,
@@ -286,7 +288,7 @@ Format your response clearly with sections for each area.`;
         };
 
     } catch (error) {
-        console.error('[AzureOpenAI] Error:', error.message);
+        log.error({ err: error }, 'Talking points generation failed');
         return {
             success: false,
             error: error.message,
