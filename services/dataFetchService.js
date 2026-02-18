@@ -10,6 +10,42 @@ const { createLogger } = require('./logger');
 
 const log = createLogger('DataFetchService');
 
+// ============ Date Formatting Helpers ============
+
+/**
+ * Format a date string to MM/DD/YYYY
+ * @param {string} dateStr - ISO date string (YYYY-MM-DD or full datetime)
+ * @returns {string} Formatted date or empty string if invalid
+ */
+function formatDate(dateStr) {
+    if (!dateStr) return '';
+    const datePart = dateStr.split('T')[0];
+    const parts = datePart.split('-');
+    if (parts.length === 3) {
+        return `${parts[1]}/${parts[2]}/${parts[0]}`;
+    }
+    return datePart;
+}
+
+/**
+ * Format a datetime string to MM/DD/YYYY h:mm A
+ * @param {string} dateStr - ISO datetime string
+ * @returns {string} Formatted datetime or empty string if invalid
+ */
+function formatDateTime(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    let hours = date.getHours();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${month}/${day}/${year} ${hours}:${minutes} ${ampm}`;
+}
+
 // Quick select mappings
 const QUICK_SELECT_RESOURCES = {
     clinical: [
@@ -345,8 +381,10 @@ function formatAllergies(data) {
     const lines = data.map(allergy => {
         const name = allergy.substance || allergy.code?.text || allergy.code?.coding?.[0]?.display || 'Unknown';
         const severity = allergy.criticality || allergy.severity || '';
-        const reaction = allergy.reaction?.[0]?.manifestation?.[0]?.text || '';
-        return `- **${name}**${severity ? ` (${severity})` : ''}${reaction ? `: ${reaction}` : ''}`;
+        const reaction = allergy.reaction?.[0]?.manifestation?.[0]?.text || allergy.reaction || '';
+        const onset = allergy.onsetDateTime ? ` | Onset: ${formatDate(allergy.onsetDateTime)}` : '';
+        const note = allergy.note ? `\n  _${allergy.note}_` : '';
+        return `- **${name}**${severity ? ` (${severity})` : ''}${reaction ? `: ${reaction}` : ''}${onset}${note}`;
     });
 
     return { isEmpty: false, formatted: lines.join('\n') };
@@ -359,7 +397,10 @@ function formatMedications(data) {
         const name = med.name || med.medicationCodeableConcept?.text || 'Unknown medication';
         const dosage = med.dosage || med.dosageInstruction?.[0]?.text || '';
         const frequency = med.frequency || '';
-        return `- **${name}**${dosage ? ` - ${dosage}` : ''}${frequency ? ` (${frequency})` : ''}`;
+        const prescribed = med.authoredOn ? ` | Prescribed: ${formatDate(med.authoredOn)}` : '';
+        const prescriber = med.requester ? ` | By: ${med.requester}` : '';
+        const reason = med.reasonCode ? `\n  Reason: ${med.reasonCode}` : '';
+        return `- **${name}**${dosage ? ` - ${dosage}` : ''}${frequency ? ` (${frequency})` : ''}${prescribed}${prescriber}${reason}`;
     });
 
     return { isEmpty: false, formatted: lines.join('\n') };
@@ -375,14 +416,18 @@ function formatVitals(resourceId, data) {
             const value = vital.value || vital.valueQuantity?.value || '';
             const unit = vital.unit || vital.valueQuantity?.unit || '';
             const date = vital.date || vital.effectiveDateTime || '';
-            return `- ${date}: **${value}${unit ? ' ' + unit : ''}**`;
+            const formattedDate = formatDate(date) || date;
+            const interp = vital.interpretation ? ` [${vital.interpretation}]` : '';
+            const note = vital.note ? ` _${vital.note}_` : '';
+            return `- ${formattedDate}: **${value}${unit ? ' ' + unit : ''}**${interp}${note}`;
         });
         return { isEmpty: false, formatted: `**${vitalName}**\n${lines.join('\n')}` };
     }
 
     const value = data.value || data.valueQuantity?.value || '';
     const unit = data.unit || data.valueQuantity?.unit || '';
-    return { isEmpty: false, formatted: `**${vitalName}:** ${value}${unit ? ' ' + unit : ''}` };
+    const interp = data.interpretation ? ` [${data.interpretation}]` : '';
+    return { isEmpty: false, formatted: `**${vitalName}:** ${value}${unit ? ' ' + unit : ''}${interp}` };
 }
 
 function formatCareTeam(data) {
@@ -448,11 +493,20 @@ function formatCarePlan(data) {
         if (plan.title || plan.description) parts.push(`**${plan.title || plan.description}**`);
         if (plan.status) parts.push(`Status: ${plan.status}`);
         if (plan.period) {
-            const start = plan.period.start || plan.periodStart || '';
-            const end = plan.period.end || plan.periodEnd || '';
+            const start = formatDate(plan.period.start || plan.periodStart) || plan.periodStart || '';
+            const end = formatDate(plan.period.end || plan.periodEnd) || plan.periodEnd || '';
             if (start || end) parts.push(`Period: ${start} to ${end}`);
         }
         if (plan.activities) parts.push(`Activities: ${plan.activities}`);
+        if (plan.activityDetails && plan.activityDetails.length > 0) {
+            const actList = plan.activityDetails.map(a => {
+                const desc = a.description || a.reference || 'Activity';
+                const status = a.status ? ` (${a.status})` : '';
+                const sched = a.scheduledString ? ` - ${a.scheduledString}` : '';
+                return `  - ${desc}${status}${sched}`;
+            });
+            parts.push(`Details:\n${actList.join('\n')}`);
+        }
         return parts.join('\n');
     });
 
@@ -469,7 +523,8 @@ function formatDiagnoses(data) {
         const name = cond.display || cond.code?.text || cond.code?.coding?.[0]?.display || 'Unknown';
         const code = cond.code?.coding?.[0]?.code || cond.code || '';
         const status = cond.clinicalStatus || '';
-        return `- **${name}**${code ? ` (${code})` : ''}${status ? ` - ${status}` : ''}`;
+        const onset = cond.onsetDateTime ? ` | Onset: ${formatDate(cond.onsetDateTime)}` : '';
+        return `- **${name}**${code ? ` (${code})` : ''}${status ? ` - ${status}` : ''}${onset}`;
     });
 
     return { isEmpty: false, formatted: lines.join('\n') };
@@ -487,6 +542,7 @@ function formatWoundCondition(data) {
         parts.push(`**${name}**`);
         if (wound.bodySite) parts.push(`Location: ${wound.bodySite}`);
         if (wound.clinicalStatus) parts.push(`Status: ${wound.clinicalStatus}`);
+        if (wound.onsetDateTime) parts.push(`Onset: ${formatDate(wound.onsetDateTime)}`);
         return parts.join('\n');
     });
 
@@ -518,10 +574,19 @@ function formatAppointments(data) {
     const appointments = Array.isArray(data) ? data : [data];
     const lines = appointments.slice(0, 10).map(apt => {
         const parts = [];
-        const date = apt.start || apt.date || '';
+        const date = apt.start ? formatDateTime(apt.start) : (apt.date || '');
         const type = apt.type || apt.appointmentType?.coding?.[0]?.display || '';
         const status = apt.status || '';
         parts.push(`- **${date}**${type ? ` - ${type}` : ''}${status ? ` (${status})` : ''}`);
+        if (apt.end && apt.start) {
+            const durationMs = new Date(apt.end) - new Date(apt.start);
+            if (durationMs > 0) {
+                const mins = Math.round(durationMs / 60000);
+                parts.push(`  Duration: ${mins} min`);
+            }
+        }
+        if (apt.reasonCode) parts.push(`  Reason: ${apt.reasonCode}`);
+        if (apt.description) parts.push(`  ${apt.description}`);
         if (apt.participants) parts.push(`  Participants: ${apt.participants.join(', ')}`);
         return parts.join('\n');
     });
@@ -539,9 +604,16 @@ function formatEpisodeOfCare(data) {
         const parts = [];
         if (ep.type) parts.push(`**${ep.type}**`);
         if (ep.status) parts.push(`Status: ${ep.status}`);
-        const start = ep.periodStart || ep.period?.start || '';
-        const end = ep.periodEnd || ep.period?.end || '';
+        const start = formatDate(ep.periodStart || ep.period?.start) || ep.periodStart || '';
+        const end = formatDate(ep.periodEnd || ep.period?.end) || ep.periodEnd || '';
         if (start || end) parts.push(`Period: ${start} to ${end}`);
+        if (ep.careManager) parts.push(`Care Manager: ${ep.careManager}`);
+        if (ep.diagnoses && ep.diagnoses.length > 0) {
+            const dxList = ep.diagnoses.map((d, i) =>
+                `  ${i + 1}. ${d.display || 'Unknown'}${d.role ? ` (${d.role})` : ''}`
+            );
+            parts.push(`Diagnoses:\n${dxList.join('\n')}`);
+        }
         return parts.join('\n');
     });
 
@@ -555,7 +627,8 @@ function formatEncounters(data) {
 
     const encounters = Array.isArray(data) ? data : [data];
     const lines = encounters.slice(0, 10).map(enc => {
-        const date = enc.date || enc.period?.start || '';
+        const rawDate = enc.date || enc.period?.start || '';
+        const date = formatDate(rawDate) || rawDate;
         const type = enc.type || '';
         const status = enc.status || '';
         const reason = enc.reasonCode || '';
@@ -571,7 +644,11 @@ function formatPhysician(data) {
     const lines = [];
     if (data.name) lines.push(`**${data.name}**`);
     if (data.specialty) lines.push(`Specialty: ${data.specialty}`);
+    if (data.qualifications && data.qualifications.length > 0) {
+        lines.push(`Credentials: ${data.qualifications.join(', ')}`);
+    }
     if (data.phone) lines.push(`Phone: ${data.phone}`);
+    if (data.email) lines.push(`Email: ${data.email}`);
 
     return { isEmpty: lines.length === 0, formatted: lines.join('\n') || 'No physician data' };
 }
@@ -651,14 +728,26 @@ function formatDocumentReferences(data) {
     }
 
     const docs = Array.isArray(data) ? data : [data];
-    const lines = docs.slice(0, 15).map(doc => {
+    // Filter to only current documents if status field is available
+    const currentDocs = docs.filter(doc => !doc.status || doc.status === 'current');
+    const displayDocs = currentDocs.length > 0 ? currentDocs : docs;
+
+    const lines = displayDocs.slice(0, 15).map(doc => {
         const parts = [];
         const type = doc.type || 'Document';
-        const date = doc.date || '';
-        parts.push(`- **${type}**${date ? ` (${date})` : ''}`);
-        if (doc.author) parts.push(`  Author: ${doc.author}`);
+        const date = doc.date ? formatDate(doc.date) : '';
+        const statusBadge = doc.status && doc.status !== 'current' ? ` [${doc.status}]` : '';
+        parts.push(`- **${type}**${date ? ` (${date})` : ''}${statusBadge}`);
+        const authorList = doc.authors && doc.authors.length > 0
+            ? doc.authors.join(', ')
+            : doc.author || null;
+        if (authorList) parts.push(`  Author: ${authorList}`);
         return parts.join('\n');
     });
+
+    if (docs.length > currentDocs.length && currentDocs.length > 0) {
+        lines.push(`\n_${docs.length - currentDocs.length} non-current document(s) hidden_`);
+    }
 
     return { isEmpty: false, formatted: lines.join('\n') };
 }
@@ -717,6 +806,8 @@ module.exports = {
     formatSimpleData,
     needsAISummary,
     getResourceLabel,
+    formatDate,
+    formatDateTime,
     QUICK_SELECT_RESOURCES,
     AI_SUMMARY_TYPES,
     RESOURCE_METHOD_MAP

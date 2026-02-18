@@ -6,6 +6,22 @@
 const welcomeCard = require('./welcomeCard.json');
 
 /**
+ * Resolve a patient's display name from various object shapes.
+ * Single source of truth for patient name display across all cards.
+ * @param {Object} patient - Patient object (may have name, fullName, firstName, lastName)
+ * @returns {string} Display name
+ */
+function resolvePatientName(patient) {
+    if (!patient) return 'Unknown Patient';
+    if (patient.fullName) return patient.fullName;
+    if (patient.name) return patient.name;
+    if (patient.lastName && patient.firstName) return `${patient.lastName}, ${patient.firstName}`;
+    if (patient.lastName) return patient.lastName;
+    if (patient.firstName) return patient.firstName;
+    return `Patient ${patient.id || 'Unknown'}`;
+}
+
+/**
  * Get the welcome/login card
  * @returns {Object} Welcome card JSON
  */
@@ -180,11 +196,12 @@ function buildPatientSelectionCard(worker, patients, selectedDate) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": patient.visitType || "Visit",
+                        "text": (patient.visitType || "Visit") + (patient.visitReason ? ` - ${patient.visitReason}` : ''),
                         "size": "Small",
                         "isSubtle": true,
                         "spacing": "None",
-                        "horizontalAlignment": "Center"
+                        "horizontalAlignment": "Center",
+                        "wrap": true
                     }
                 ]
             });
@@ -351,7 +368,7 @@ function buildResourceSelectionCard(patient, worker) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": `Patient: ${patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`}`,
+                        "text": `Patient: ${resolvePatientName(patient)}`,
                         "size": "Small",
                         "spacing": "None",
                         "color": "Accent"
@@ -565,7 +582,7 @@ function buildResourceSelectionCard(patient, worker) {
             "data": {
                 "action": "fetchResources",
                 "patientId": patient.id,
-                "patientName": patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`,
+                "patientName": resolvePatientName(patient),
                 "workerId": worker.id
             }
         },
@@ -575,7 +592,7 @@ function buildResourceSelectionCard(patient, worker) {
             "data": {
                 "action": "viewDocuments",
                 "patientId": patient.id,
-                "patientName": patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`
+                "patientName": resolvePatientName(patient)
             }
         },
         {
@@ -1302,7 +1319,7 @@ function buildErrorCard(title, message) {
  * @returns {Object} Results card JSON
  */
 function buildDataResultsCard(patient, fetchResults, errors = []) {
-    const patientName = patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`;
+    const patientName = resolvePatientName(patient);
 
     const card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -1554,7 +1571,7 @@ function buildDataResultsCard(patient, fetchResults, errors = []) {
  * @returns {Object} Document list card JSON
  */
 function buildDocumentListCard(patient, documents, worker) {
-    const patientName = patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`;
+    const patientName = resolvePatientName(patient);
 
     const card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -1609,10 +1626,14 @@ function buildDocumentListCard(patient, documents, worker) {
             "isSubtle": true
         });
 
-        // Group documents by type
+        // Group documents by type (normalize casing for consistent grouping)
         const grouped = {};
         documents.forEach(doc => {
-            const type = doc.type || 'Other';
+            const rawType = doc.type || 'Other';
+            // Normalize: title case for display consistency
+            const type = rawType.split(' ').map(w =>
+                w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+            ).join(' ');
             if (!grouped[type]) grouped[type] = [];
             grouped[type].push(doc);
         });
@@ -1797,7 +1818,7 @@ function getDaysUntil(dateStr) {
  * @returns {Object} AI Summary card JSON
  */
 function buildAISummaryCard(patient, summaryData, worker) {
-    const patientName = patient.name || patient.fullName || `${patient.lastName}, ${patient.firstName}`;
+    const patientName = resolvePatientName(patient);
 
     const card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -2102,5 +2123,6 @@ module.exports = {
     buildPatientListCard,
     buildSummaryCard,
     buildErrorCard,
+    resolvePatientName,
     RESOURCE_CATEGORIES
 };

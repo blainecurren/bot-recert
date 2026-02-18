@@ -327,6 +327,10 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     log.warn({ patientId: patient.id }, 'No name found for patient');
                 }
 
+                // Extract visit reason from appointment
+                const reasonCode = appointment.reasonCode?.[0]?.text
+                    || appointment.reasonCode?.[0]?.coding?.[0]?.display || null;
+
                 const patientData = {
                     id: patient.id,
                     appointmentId: appointment.id,
@@ -337,6 +341,7 @@ async function getPatientsByWorkerAndDate(workerId, dateStr) {
                     mrn: patient.identifier?.find(id => id.type?.coding?.[0]?.code === 'MR')?.value || patient.id,
                     visitTime: appointment.start ? new Date(appointment.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'TBD',
                     visitType: visitType,
+                    visitReason: reasonCode,
                     status: appointment.status
                 };
                 log.debug({ patientId: patientData.id }, 'Adding patient');
@@ -400,12 +405,16 @@ async function getPatientEpisode(patientId) {
         episodeId: episode.id,
         episodeStart: episode.periodStart,
         episodeEnd: episode.periodEnd,
+        careManager: episode.careManager || null,
         primaryDiagnosis: primaryDx?.display || 'Not specified',
         secondaryDiagnoses: secondaryDx.map(d => d.display),
+        episodeDiagnoses: episode.diagnoses || [],
         medications: medications.map(m => ({
             name: m.name,
             dose: m.dosage,
-            frequency: m.frequency
+            frequency: m.frequency,
+            authoredOn: m.authoredOn || null,
+            requester: m.requester || null
         })),
         recentVisits: encounters.map(e => ({
             date: e.date,
@@ -415,7 +424,8 @@ async function getPatientEpisode(patientId) {
         goals: goals.map(g => ({
             goal: g.description,
             status: g.achievementStatus || g.status || 'In Progress',
-            notes: ''
+            notes: (g.notes || []).join('; '),
+            targets: g.targets || []
         })),
         alerts: []
     };

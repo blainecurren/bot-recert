@@ -304,7 +304,8 @@ async function getConditions(patientId) {
                 code: condition.code?.coding?.[0]?.code,
                 display: condition.code?.coding?.[0]?.display || condition.code?.text,
                 clinicalStatus: condition.clinicalStatus?.coding?.[0]?.code,
-                category: condition.category?.[0]?.coding?.[0]?.display
+                category: condition.category?.[0]?.coding?.[0]?.display,
+                onsetDateTime: condition.onsetDateTime || null
             };
         });
     } catch (error) {
@@ -338,7 +339,10 @@ async function getMedications(patientId) {
                 name: med.medicationCodeableConcept?.text ||
                       med.medicationCodeableConcept?.coding?.[0]?.display || 'Unknown',
                 dosage: dosage?.text || '',
-                frequency: dosage?.timing?.code?.text || ''
+                frequency: dosage?.timing?.code?.text || '',
+                authoredOn: med.authoredOn || null,
+                requester: med.requester?.display || med.requester?.reference || null,
+                reasonCode: med.reasonCode?.[0]?.text || med.reasonCode?.[0]?.coding?.[0]?.display || null
             };
         });
     } catch (error) {
@@ -399,7 +403,16 @@ async function getCarePlanGoals(patientId) {
                 id: goal.id,
                 description: goal.description?.text,
                 status: goal.lifecycleStatus,
-                achievementStatus: goal.achievementStatus?.coding?.[0]?.display
+                achievementStatus: goal.achievementStatus?.coding?.[0]?.display,
+                targets: (goal.target || []).map(t => ({
+                    measure: t.measure?.coding?.[0]?.display || t.measure?.text,
+                    dueDate: t.dueDate || null,
+                    detailString: t.detailString || null,
+                    detailQuantity: t.detailQuantity
+                        ? `${t.detailQuantity.value} ${t.detailQuantity.unit || ''}`
+                        : null
+                })),
+                notes: (goal.note || []).map(n => n.text).filter(Boolean)
             };
         });
     } catch (error) {
@@ -421,22 +434,7 @@ async function getDocuments(patientId) {
 
         if (!bundle.entry) return [];
 
-        return bundle.entry.map(entry => {
-            const doc = entry.resource;
-            const attachment = doc.content?.[0]?.attachment || {};
-            return {
-                id: doc.id,
-                type: doc.type?.text || doc.type?.coding?.[0]?.display,
-                date: doc.date ? doc.date.split('T')[0] : null,
-                author: doc.author?.[0]?.display,
-                description: doc.description,
-                content: attachment.data || doc.description,
-                url: attachment.url || null,
-                contentType: attachment.contentType || null,
-                filename: attachment.title || null,
-                hasAttachment: !!attachment.url
-            };
-        });
+        return bundle.entry.map(entry => transformDocumentReference(entry.resource));
     } catch (error) {
         log.error({ err: error }, 'Get documents failed');
         return [];
@@ -468,7 +466,9 @@ async function getAllergyIntolerances(patientId) {
                 substance: allergy.code?.coding?.[0]?.display || allergy.code?.text,
                 criticality: allergy.criticality,
                 severity: allergy.reaction?.[0]?.severity,
-                reaction: allergy.reaction?.[0]?.manifestation?.[0]?.coding?.[0]?.display
+                reaction: allergy.reaction?.[0]?.manifestation?.[0]?.coding?.[0]?.display,
+                onsetDateTime: allergy.onsetDateTime || null,
+                note: allergy.note?.[0]?.text || null
             };
         });
     } catch (error) {
@@ -500,7 +500,10 @@ async function getObservationsByCode(patientId, loincCode, limit = 10) {
                 date: obs.effectiveDateTime,
                 value: obs.valueQuantity?.value,
                 unit: obs.valueQuantity?.unit,
-                status: obs.status
+                status: obs.status,
+                interpretation: obs.interpretation?.[0]?.coding?.[0]?.display
+                    || obs.interpretation?.[0]?.text || null,
+                note: obs.note?.[0]?.text || null
             };
         });
     } catch (error) {
@@ -544,7 +547,10 @@ async function getBloodPressure(patientId) {
                 systolic: systolic?.valueQuantity?.value,
                 diastolic: diastolic?.valueQuantity?.value,
                 unit: 'mmHg',
-                value: `${systolic?.valueQuantity?.value || '?'}/${diastolic?.valueQuantity?.value || '?'}`
+                value: `${systolic?.valueQuantity?.value || '?'}/${diastolic?.valueQuantity?.value || '?'}`,
+                interpretation: obs.interpretation?.[0]?.coding?.[0]?.display
+                    || obs.interpretation?.[0]?.text || null,
+                note: obs.note?.[0]?.text || null
             };
         });
     } catch (error) {
@@ -690,7 +696,15 @@ async function getCarePlanByCategory(patientId, category) {
                 status: plan.status,
                 period: plan.period,
                 goals: plan.goal?.map(g => g.reference),
-                activities: plan.activity?.length || 0
+                activities: plan.activity?.length || 0,
+                activityDetails: (plan.activity || []).slice(0, 10).map(a => ({
+                    description: a.detail?.description || a.detail?.code?.text
+                        || a.detail?.code?.coding?.[0]?.display || null,
+                    status: a.detail?.status || null,
+                    scheduledString: a.detail?.scheduledString || null,
+                    kind: a.detail?.kind || null,
+                    reference: a.reference?.reference || null
+                })).filter(a => a.description || a.reference)
             };
         });
     } catch (error) {
@@ -746,22 +760,7 @@ async function getDocumentsByType(patientId, typeCode) {
 
         if (!bundle.entry) return [];
 
-        return bundle.entry.map(entry => {
-            const doc = entry.resource;
-            const attachment = doc.content?.[0]?.attachment || {};
-            return {
-                id: doc.id,
-                type: doc.type?.text || doc.type?.coding?.[0]?.display,
-                date: doc.date ? doc.date.split('T')[0] : null,
-                author: doc.author?.[0]?.display,
-                description: doc.description,
-                content: attachment.data || doc.description,
-                url: attachment.url || null,
-                contentType: attachment.contentType || null,
-                filename: attachment.title || null,
-                hasAttachment: !!attachment.url
-            };
-        });
+        return bundle.entry.map(entry => transformDocumentReference(entry.resource));
     } catch (error) {
         log.error({ err: error }, 'Get documents by type failed');
         return [];
@@ -861,7 +860,8 @@ async function getWounds(patientId) {
                 code: condition.code?.coding?.[0]?.code,
                 display: condition.code?.coding?.[0]?.display || condition.code?.text,
                 bodySite: condition.bodySite?.[0]?.coding?.[0]?.display,
-                clinicalStatus: condition.clinicalStatus?.coding?.[0]?.code
+                clinicalStatus: condition.clinicalStatus?.coding?.[0]?.code,
+                onsetDateTime: condition.onsetDateTime || null
             };
         });
     } catch (error) {
@@ -903,7 +903,10 @@ async function getPatientVisits(patientId, filterByValidCodes = true) {
                 start: apt.start,
                 end: apt.end,
                 typeCode: typeCode,
-                type: typeDisplay
+                type: typeDisplay,
+                reasonCode: apt.reasonCode?.[0]?.text
+                    || apt.reasonCode?.[0]?.coding?.[0]?.display || null,
+                description: apt.description || null
             };
         });
 
@@ -1156,7 +1159,12 @@ async function getPhysician(patientId) {
         return {
             id: practitioner.id,
             name: name.text || `${name.prefix?.[0] || ''} ${name.given?.[0] || ''} ${name.family || ''}`.trim(),
-            specialty: practitioner.qualification?.[0]?.code?.coding?.[0]?.display
+            specialty: practitioner.qualification?.[0]?.code?.coding?.[0]?.display,
+            phone: practitioner.telecom?.find(t => t.system === 'phone')?.value || null,
+            email: practitioner.telecom?.find(t => t.system === 'email')?.value || null,
+            qualifications: (practitioner.qualification || []).map(q =>
+                q.code?.coding?.[0]?.display || q.code?.text
+            ).filter(Boolean)
         };
     } catch (error) {
         log.error({ err: error }, 'Get physician failed');
@@ -1293,6 +1301,24 @@ async function getAccount(patientId) {
 
 // ============ Helper Functions ============
 
+function transformDocumentReference(doc) {
+    const attachment = doc.content?.[0]?.attachment || {};
+    return {
+        id: doc.id,
+        type: doc.type?.text || doc.type?.coding?.[0]?.display,
+        date: doc.date ? doc.date.split('T')[0] : null,
+        author: doc.author?.[0]?.display,
+        authors: (doc.author || []).map(a => a.display).filter(Boolean),
+        status: doc.status || null,
+        description: doc.description,
+        content: attachment.data || doc.description,
+        url: attachment.url || null,
+        contentType: attachment.contentType || null,
+        filename: attachment.title || null,
+        hasAttachment: !!attachment.url
+    };
+}
+
 function transformPatient(patient) {
     const name = patient.name?.[0] || {};
     return {
@@ -1313,7 +1339,14 @@ function transformEpisode(episode) {
         type: episode.type?.[0]?.text,
         patientRef: episode.patient?.reference,
         periodStart: episode.period?.start,
-        periodEnd: episode.period?.end
+        periodEnd: episode.period?.end,
+        careManager: episode.careManager?.display || episode.careManager?.reference || null,
+        primaryDiagnosis: episode.diagnosis?.[0]?.condition?.display || null,
+        diagnoses: (episode.diagnosis || []).map(d => ({
+            display: d.condition?.display || d.condition?.reference,
+            role: d.role?.coding?.[0]?.display,
+            rank: d.rank
+        }))
     };
 }
 
