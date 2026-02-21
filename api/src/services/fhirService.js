@@ -3,8 +3,8 @@
  * High-level functions for querying patient data, episodes, and documents
  *
  * Can use either:
- * - Python backend (preferred) - set USE_PYTHON_BACKEND=true
- * - Direct FHIR calls (fallback)
+ * - Python backend (opt-in) - set USE_PYTHON_BACKEND=true
+ * - Direct FHIR calls (default)
  */
 
 const { fhirGet } = require('./fhirClient');
@@ -12,8 +12,8 @@ const pythonBackend = require('./pythonBackendClient');
 const { createLogger } = require('./logger');
 const log = createLogger('FHIR');
 
-// Use Python backend by default, can be disabled via env var
-const USE_PYTHON_BACKEND = process.env.USE_PYTHON_BACKEND !== 'false';
+// Python backend is OFF by default — opt in via env var
+const USE_PYTHON_BACKEND = process.env.USE_PYTHON_BACKEND === 'true';
 
 /**
  * Valid HCHB Visit Type Codes for filtering appointments
@@ -41,13 +41,13 @@ const VALID_VISIT_TYPE_CODES = new Set([
     // Registered Nurse
     'RN00', 'RN00H', 'RN01', 'RN02', 'RN02H', 'RN03', 'RN05', 'RN06', 'RN10', 'RN10H', 'RN10-WC',
     'RN11', 'RN11H', 'RN11H-HIAC', 'RN11WC', 'RN15', 'RN18', 'RN18H', 'RN19', 'RN26', 'RN70H', 'RN72H',
-    'RN88', 'RN88H', 'RN88HN', 'RN-PRN', 'RN-PRNH', 'RN-URPHA', 'RN10N-AIDE',  // Added aide supervisory
+    'RN88', 'RN88H', 'RN88HN', 'RN-PRN', 'RN-PRNH', 'RN-URPHA', 'RN10N-AIDE',
     // Skilled Nursing
     'SN11', 'SN11H', 'SN11H-HIAC', 'SN11N', 'SN11RS', 'SN11RSHOSP', 'SN11WC', 'SN70H', 'SN88H',
     'SN-PRN', 'SN-PRNH', 'SNCOURTESY', 'SNIH',
-    'SN11P', 'SN93', 'SN-FREQREV', 'SN-RECREQ', 'INF-LOG-FU', 'SN-TELECOM',  // HCHB additional SN codes
+    'SN11P', 'SN93', 'SN-FREQREV', 'SN-RECREQ', 'INF-LOG-FU', 'SN-TELECOM',
     // Licensed Vocational Nurse
-    'LVN11', 'LVN11WC', 'LVN-PRN', 'LVN11P',  // Added LVN11P for palliative
+    'LVN11', 'LVN11WC', 'LVN-PRN', 'LVN11P',
     // Home Health Aide
     'HH11', 'HH11N',
     // Hospice Support/Aide
@@ -144,7 +144,7 @@ async function getPatientById(patientId) {
 
 /**
  * Get worker/practitioner by ID (simple FHIR lookup)
- * Note: For full validation with Python backend fallbacks, use patientService.getWorkerById
+ * Note: For full validation with Python backend fallbacks, use workerLookup.getWorkerById
  */
 async function getWorkerById(workerId) {
     try {
@@ -205,7 +205,7 @@ async function getRecertPatients(workerId = null, daysAhead = 30) {
 
             const endDate = new Date(periodEnd);
             const daysUntilRecert = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
-            
+
             if (daysUntilRecert >= -7 && daysUntilRecert <= daysAhead) {
                 const patientRef = episode.patient?.reference;
                 let patient = patientMap.get(patientRef);
@@ -1306,6 +1306,171 @@ async function getAccount(patientId) {
     }
 }
 
+// ============ Patient Scheduling ============
+
+/**
+ * Get patients scheduled for a worker on a specific date
+ * Ported from patientService.getPatientsByWorkerAndDate
+ */
+async function getPatientsByWorkerAndDate(workerId, dateStr) {
+    // Try Python backend first
+    if (USE_PYTHON_BACKEND) {
+        try {
+            log.debug({ workerId, dateStr }, 'Getting patients via Python backend');
+            const result = await pythonBackend.getWorkerPatients(workerId, dateStr);
+            if (result.data && result.data.length > 0) {
+                // Filter by valid visit type codes
+                const totalCount = result.data.length;
+                const filtered = result.data.filter(patient => {
+                    const visitTypeCode = patient.visitTypeCode || patient.visitType?.split(' ')?.[0] || '';
+                    return isValidVisitTypeCode(visitTypeCode);
+                });
+                log.info({ filtered: totalCount - filtered.length, total: totalCount }, 'Filtered patients by visit type');
+                return filtered;
+            }
+            log.debug('No patients from Python backend, trying FHIR');
+        } catch (error) {
+            log.debug({ err: error }, 'Python backend unavailable');
+        }
+    }
+
+    // Fallback to direct FHIR
+    try {
+        log.debug({ workerId, dateStr }, 'Getting patients via FHIR');
+
+        let bundle = null;
+        try {
+            bundle = await fhirGet('/Appointment', {
+                actor: `Practitioner/${workerId}`,
+                date: dateStr,
+                _count: 100
+            });
+        } catch (e) {
+            log.debug({ err: e }, 'Appointment query failed');
+        }
+
+        if (!bundle || !bundle.entry || bundle.entry.length === 0) {
+            log.debug('No appointments found for this date');
+            return [];
+        }
+
+        const totalAppointments = bundle.entry.length;
+        log.debug({ totalAppointments }, 'Appointments found');
+
+        const scheduledPatients = [];
+        const seenPatientIds = new Set();
+        let skippedCount = 0;
+
+        for (const entry of bundle.entry) {
+            const appointment = entry.resource;
+
+            // Get service type code (discipline-specific: SN11, RN10, LVN11WC, etc.)
+            const serviceTypeCode = appointment.serviceType?.[0]?.coding?.[0]?.code || '';
+            const serviceTypeDisplay = appointment.serviceType?.[0]?.coding?.[0]?.display || '';
+            const appointmentTypeCode = appointment.appointmentType?.coding?.[0]?.code || '';
+
+            log.debug({ appointmentId: appointment.id, serviceTypeCode, serviceTypeDisplay, appointmentTypeCode }, 'Processing appointment');
+
+            // Filter by serviceType code (discipline-specific codes like SN11, RN10, LVN11WC)
+            if (!isValidVisitTypeCode(serviceTypeCode)) {
+                log.debug({ serviceTypeCode }, 'Skipping appointment with invalid service type');
+                skippedCount++;
+                continue;
+            }
+
+            // HCHB stores patient in extension, not participant
+            let patientRef = null;
+
+            // First try extension
+            const subjectExt = appointment.extension?.find(ext =>
+                ext.url === 'https://api.hchb.com/fhir/r4/StructureDefinition/subject'
+            );
+            if (subjectExt && subjectExt.valueReference?.reference) {
+                patientRef = subjectExt.valueReference.reference;
+            }
+
+            // Fallback to participant if no extension
+            if (!patientRef) {
+                const patientParticipant = appointment.participant?.find(p =>
+                    p.actor?.reference?.startsWith('Patient/')
+                );
+                if (patientParticipant) {
+                    patientRef = patientParticipant.actor.reference;
+                }
+            }
+
+            if (!patientRef) continue;
+
+            const patientId = patientRef.replace('Patient/', '');
+
+            // Skip if we've already added this patient
+            if (seenPatientIds.has(patientId)) continue;
+            seenPatientIds.add(patientId);
+
+            // Fetch patient details
+            let patient = null;
+            try {
+                patient = await fhirGet(`/Patient/${patientId}`);
+            } catch (e) {
+                log.debug({ patientId, err: e }, 'Failed to fetch patient');
+                continue;
+            }
+
+            if (patient) {
+                const name = patient.name?.[0] || {};
+                // Use serviceType for visit type display (more specific discipline codes)
+                const svcCode = appointment.serviceType?.[0]?.coding?.[0]?.code || '';
+                const svcDisplay = appointment.serviceType?.[0]?.coding?.[0]?.display || '';
+                const visitType = svcCode && svcDisplay
+                    ? `${svcCode} - ${svcDisplay}`
+                    : svcDisplay || svcCode || 'Visit';
+
+                // Build name with fallbacks
+                const firstName = name.given?.[0] || '';
+                const lastName = name.family || '';
+                let fullName = name.text || `${firstName} ${lastName}`.trim();
+
+                if (!fullName) {
+                    fullName = `Patient ${patient.id}`;
+                    log.warn({ patientId: patient.id }, 'No name found for patient');
+                }
+
+                // Extract visit reason from appointment
+                const reasonCode = appointment.reasonCode?.[0]?.text
+                    || appointment.reasonCode?.[0]?.coding?.[0]?.display || null;
+
+                scheduledPatients.push({
+                    id: patient.id,
+                    appointmentId: appointment.id,
+                    firstName: firstName || fullName.split(' ')[0] || 'Unknown',
+                    lastName: lastName || fullName.split(' ').slice(1).join(' ') || '',
+                    fullName: fullName,
+                    dob: patient.birthDate,
+                    mrn: patient.identifier?.find(id => id.type?.coding?.[0]?.code === 'MR')?.value || patient.id,
+                    visitTime: appointment.start ? new Date(appointment.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'TBD',
+                    visitType: visitType,
+                    visitReason: reasonCode,
+                    status: appointment.status
+                });
+            }
+        }
+
+        // Sort by visit time
+        scheduledPatients.sort((a, b) => {
+            if (a.visitTime === 'TBD') return 1;
+            if (b.visitTime === 'TBD') return -1;
+            return a.visitTime.localeCompare(b.visitTime);
+        });
+
+        log.info({ patientCount: scheduledPatients.length, dateStr, skipped: skippedCount, total: totalAppointments }, 'Patients loaded');
+        return scheduledPatients;
+
+    } catch (error) {
+        log.error({ err: error }, 'Get patients by date failed');
+        return [];
+    }
+}
+
 // ============ Helper Functions ============
 
 function transformDocumentReference(doc) {
@@ -1359,7 +1524,7 @@ function transformEpisode(episode) {
 
 function extractMRN(patient) {
     const identifiers = patient.identifier || [];
-    const mrnId = identifiers.find(id => 
+    const mrnId = identifiers.find(id =>
         id.type?.coding?.[0]?.code === 'MR' ||
         id.system?.includes('mrn')
     );
@@ -1373,6 +1538,7 @@ module.exports = {
     getWorkerById,
     getWorker,
     getRecertPatients,
+    getPatientsByWorkerAndDate,
 
     // Episodes & Encounters
     getPatientEpisodes,
@@ -1442,11 +1608,7 @@ module.exports = {
     getReferralOrders,
     getAccount,
 
-    // Python Backend utilities
-    fetchResourceViaPython: pythonBackend.fetchResource,
-    getWorkerPatientsViaPython: pythonBackend.getWorkerPatients,
-    batchFetchViaPython: pythonBackend.batchFetch,
-    pythonBackendHealthCheck: pythonBackend.healthCheck,
+    // Config flags
     USE_PYTHON_BACKEND,
 
     // Visit Type Code utilities

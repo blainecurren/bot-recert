@@ -41,7 +41,6 @@ async function getAccessToken() {
     }
 
     try {
-        // Match exact Postman format: x-www-form-urlencoded
         const params = new URLSearchParams();
         params.append('grant_type', 'agency_auth');
         params.append('client_id', clientId);
@@ -126,54 +125,6 @@ async function fhirGet(endpoint, params = {}) {
 }
 
 /**
- * Make authenticated POST request to FHIR API
- * @param {string} endpoint - API endpoint
- * @param {object} data - Request body
- * @returns {Promise<object>} FHIR response data
- */
-async function fhirPost(endpoint, data) {
-    const token = await getAccessToken();
-    const baseUrl = process.env.HCHB_API_BASE_URL;
-
-    const url = endpoint.startsWith('http') ? endpoint : `${baseUrl.replace(/\/+$/, '')}/${endpoint.replace(/^\/+/, '')}`;
-    log.info({ endpoint }, 'POST request');
-
-    try {
-        const response = await axios.post(url, data, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/fhir+json',
-                'Accept': 'application/fhir+json'
-            }
-        });
-
-        return response.data;
-
-    } catch (error) {
-        log.error({ err: error, endpoint, status: error.response?.status }, 'POST request failed');
-
-        // If unauthorized, clear token cache and retry once
-        if (error.response?.status === 401) {
-            log.info('Token expired, clearing cache and retrying');
-            tokenCache.accessToken = null;
-            tokenCache.expiresAt = null;
-
-            const newToken = await getAccessToken();
-            const retryResponse = await axios.post(url, data, {
-                headers: {
-                    'Authorization': `Bearer ${newToken}`,
-                    'Content-Type': 'application/fhir+json',
-                    'Accept': 'application/fhir+json'
-                }
-            });
-            return retryResponse.data;
-        }
-
-        throw error;
-    }
-}
-
-/**
  * Clear the token cache (useful for testing)
  */
 function clearTokenCache() {
@@ -191,7 +142,6 @@ async function testConnection() {
         log.info('Testing connection');
         await getAccessToken();
 
-        // Try a simple metadata request
         const baseUrl = process.env.HCHB_API_BASE_URL;
         const token = tokenCache.accessToken;
 
@@ -211,33 +161,9 @@ async function testConnection() {
     }
 }
 
-/**
- * Get current token status (for debugging)
- */
-function getTokenStatus() {
-    if (!tokenCache.accessToken) {
-        return { status: 'none', message: 'No token cached' };
-    }
-
-    const now = Date.now();
-    const expiresIn = Math.round((tokenCache.expiresAt - now) / 1000);
-
-    if (expiresIn <= 0) {
-        return { status: 'expired', message: 'Token expired' };
-    }
-
-    return {
-        status: 'valid',
-        message: `Token valid for ${expiresIn} seconds`,
-        expiresIn
-    };
-}
-
 module.exports = {
     getAccessToken,
     fhirGet,
-    fhirPost,
     clearTokenCache,
-    testConnection,
-    getTokenStatus
+    testConnection
 };
